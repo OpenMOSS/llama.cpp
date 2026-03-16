@@ -265,8 +265,14 @@ private:
 
     std::unique_ptr<llama_memory_i> memory;
 
-    // decode output (2-dimensional array: [n_outputs][n_vocab])
+    // decode output (2-dimensional row-major array: [n_outputs][logits_stride])
+    // logits_stride is the number of float entries per output row in `logits`.
+    // For standard text models, logits_stride == n_vocab. Architectures with
+    // concatenated multi-head logits (for example MOSS-TTS-Delay) can set
+    // logits_stride > n_vocab, so callers must always stride with
+    // llama_get_logits_ith() / logits_stride rather than assuming n_vocab.
     buffer_view<float> logits = {nullptr, 0};
+    uint32_t logits_stride = 0;
 
     // embeddings output (2-dimensional array: [n_outputs][n_embd])
     // populated only when pooling_type == LLAMA_POOLING_TYPE_NONE

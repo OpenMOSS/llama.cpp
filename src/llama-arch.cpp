@@ -35,6 +35,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_QWEN2MOE,         "qwen2moe"         },
     { LLM_ARCH_QWEN2VL,          "qwen2vl"          },
     { LLM_ARCH_QWEN3,            "qwen3"            },
+    { LLM_ARCH_MOSS_TTS_DELAY,   "moss-tts-delay"   },
     { LLM_ARCH_QWEN3MOE,         "qwen3moe"         },
     { LLM_ARCH_QWEN3NEXT,        "qwen3next"        },
     { LLM_ARCH_QWEN3VL,          "qwen3vl"          },
@@ -278,6 +279,15 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_CLASSIFIER_OUTPUT_LABELS, "%s.classifier.output_labels" },
 
     { LLM_KV_SHORTCONV_L_CACHE, "%s.shortconv.l_cache" },
+    { LLM_KV_N_VQ, "%s.n_vq" },
+    { LLM_KV_AUDIO_VOCAB_SIZE, "%s.audio_vocab_size" },
+    { LLM_KV_AUDIO_PAD_CODE, "%s.audio_pad_code" },
+    { LLM_KV_AUDIO_START_TOKEN_ID, "%s.audio_start_token_id" },
+    { LLM_KV_AUDIO_END_TOKEN_ID, "%s.audio_end_token_id" },
+    { LLM_KV_AUDIO_USER_SLOT_TOKEN_ID, "%s.audio_user_slot_token_id" },
+    { LLM_KV_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID, "%s.audio_assistant_gen_slot_token_id" },
+    { LLM_KV_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID, "%s.audio_assistant_delay_slot_token_id" },
+    { LLM_KV_SAMPLING_RATE, "%s.sampling_rate" },
     // sentence-transformers dense modules feature dims
     { LLM_KV_DENSE_2_FEAT_IN,        "%s.dense_2_feat_in"  },
     { LLM_KV_DENSE_2_FEAT_OUT,       "%s.dense_2_feat_out"  },
@@ -335,9 +345,11 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
 
 static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_TOKEN_EMBD,                             "token_embd" },
+    { LLM_TENSOR_TOKEN_EMBD_AUDIO,                       "token_embd_audio.%d" },
     { LLM_TENSOR_OUTPUT_NORM,                            "output_norm" },
     { LLM_TENSOR_OUTPUT_NORM_LFM2,                       "token_embd_norm" }, // fix for wrong tensor name
     { LLM_TENSOR_OUTPUT,                                 "output" },
+    { LLM_TENSOR_OUTPUT_AUDIO,                           "output_audio.%d" },
     { LLM_TENSOR_ROPE_FREQS,                             "rope_freqs" },
     { LLM_TENSOR_ATTN_NORM,                              "blk.%d.attn_norm" },
     { LLM_TENSOR_ATTN_Q,                                 "blk.%d.attn_q" },
@@ -959,6 +971,25 @@ static std::set<llm_tensor> llm_get_tensor_names(llm_arch arch) {
                 LLM_TENSOR_OUTPUT_NORM,
                 LLM_TENSOR_OUTPUT,
                 LLM_TENSOR_CLS_OUT,
+                LLM_TENSOR_ATTN_NORM,
+                LLM_TENSOR_ATTN_Q,
+                LLM_TENSOR_ATTN_Q_NORM,
+                LLM_TENSOR_ATTN_K,
+                LLM_TENSOR_ATTN_K_NORM,
+                LLM_TENSOR_ATTN_V,
+                LLM_TENSOR_ATTN_OUT,
+                LLM_TENSOR_FFN_NORM,
+                LLM_TENSOR_FFN_GATE,
+                LLM_TENSOR_FFN_DOWN,
+                LLM_TENSOR_FFN_UP,
+            };
+        case LLM_ARCH_MOSS_TTS_DELAY:
+            return {
+                LLM_TENSOR_TOKEN_EMBD,
+                LLM_TENSOR_TOKEN_EMBD_AUDIO,
+                LLM_TENSOR_OUTPUT_NORM,
+                LLM_TENSOR_OUTPUT,
+                LLM_TENSOR_OUTPUT_AUDIO,
                 LLM_TENSOR_ATTN_NORM,
                 LLM_TENSOR_ATTN_Q,
                 LLM_TENSOR_ATTN_Q_NORM,
@@ -2560,10 +2591,12 @@ static std::set<llm_tensor> llm_get_tensor_names(llm_arch arch) {
 //
 static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_TOKEN_EMBD,                 {LLM_TENSOR_LAYER_INPUT, GGML_OP_GET_ROWS}},
+    {LLM_TENSOR_TOKEN_EMBD_AUDIO,           {LLM_TENSOR_LAYER_INPUT, GGML_OP_GET_ROWS}},
     {LLM_TENSOR_POS_EMBD,                   {LLM_TENSOR_LAYER_INPUT, GGML_OP_GET_ROWS}},
     {LLM_TENSOR_TOKEN_TYPES,                {LLM_TENSOR_LAYER_INPUT, GGML_OP_GET_ROWS}},
     {LLM_TENSOR_TOKEN_EMBD_NORM,            {LLM_TENSOR_LAYER_INPUT, GGML_OP_MUL}},
     {LLM_TENSOR_OUTPUT,                     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_OUTPUT_AUDIO,               {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_CLS,                        {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_CLS_OUT,                    {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_CLS_NORM,                   {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
@@ -2790,7 +2823,16 @@ std::string LLM_TN_IMPL::str() const {
         return LLM_TENSOR_NAMES.at(tensor);
     }
 
-    std::string name = ::format(LLM_TENSOR_NAMES.at(tensor), bid, xid);
+    std::string name;
+    switch (tensor) {
+        case LLM_TENSOR_TOKEN_EMBD_AUDIO:
+        case LLM_TENSOR_OUTPUT_AUDIO:
+            name = ::format(LLM_TENSOR_NAMES.at(tensor), xid);
+            break;
+        default:
+            name = ::format(LLM_TENSOR_NAMES.at(tensor), bid, xid);
+            break;
+    }
     if (suffix != nullptr) {
         name += ".";
         name += suffix;

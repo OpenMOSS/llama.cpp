@@ -78,6 +78,9 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     gguf_context_ptr ret(gguf_init_empty());
     llama_model_saver ms(arch, ret.get());
     const uint32_t n_ctx = 128;
+    const uint32_t n_vq = 32;
+    const uint32_t audio_vocab_size = 1024;
+    const uint32_t audio_pad_code = 1024;
 
     uint32_t n_vocab = 128;
     uint32_t n_embd  = 256;
@@ -180,6 +183,12 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     ms.add_kv(LLM_KV_TOKENIZER_MODEL,         "no_vocab");
     // ms.add_kv(LLM_KV_DENSE_2_FEAT_OUT,     n_embd);
     // ms.add_kv(LLM_KV_DENSE_3_FEAT_IN,      n_embd);
+
+    if (arch == LLM_ARCH_MOSS_TTS_DELAY) {
+        ms.add_kv(LLM_KV_N_VQ,             n_vq);
+        ms.add_kv(LLM_KV_AUDIO_VOCAB_SIZE, audio_vocab_size);
+        ms.add_kv(LLM_KV_AUDIO_PAD_CODE,   audio_pad_code);
+    }
 
     if (moe) {
         ms.add_kv(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, n_ff);

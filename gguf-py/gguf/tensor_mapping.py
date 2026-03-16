@@ -37,6 +37,9 @@ class TensorNameMap:
             "model.transformer.wte",                     # llada
             "embed_tokens",                              # qwen3-embedding
         ),
+        MODEL_TENSOR.TOKEN_EMBD_AUDIO: (
+            "token_embd_audio",                          # moss-tts-delay, indexed tensors emitted manually
+        ),
 
         # Token type embeddings
         MODEL_TENSOR.TOKEN_TYPES: (
@@ -78,6 +81,9 @@ class TensorNameMap:
             "lm_head",                   # llama4
             "model.transformer.ff_out",  # llada
             "head.decoder",              # modern-bert
+        ),
+        MODEL_TENSOR.OUTPUT_AUDIO: (
+            "output_audio",              # moss-tts-delay, indexed tensors emitted manually
         ),
         MODEL_TENSOR.DENSE_2_OUT: (
             "dense_2_out",  # embeddinggemma

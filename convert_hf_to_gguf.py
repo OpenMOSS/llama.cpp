@@ -4628,6 +4628,73 @@ class Qwen3Model(Qwen2Model):
         yield from super().modify_tensors(data_torch, name, bid)
 
 
+@ModelBase.register("MossTTSDelayModel", "MossTTSDelayForCausalLM")
+class MossTTSDelayModel(Qwen3Model):
+    model_arch = gguf.MODEL_ARCH.MOSS_TTS_DELAY
+
+    def __init__(self, *args, **kwargs):
+        hparams = kwargs.get("hparams")
+        if hparams is None:
+            hparams = ModelBase.load_hparams(args[0], self.is_mistral_format)
+        else:
+            hparams = dict(hparams)
+
+        language_config = hparams.get("language_config")
+        if isinstance(language_config, dict):
+            # Expose the Qwen3 backbone params at the root level so TextModel can
+            # discover block_count / hidden_size / attention params without
+            # losing the top-level MOSS architecture identity.
+            language_hparams = {
+                key: value
+                for key, value in language_config.items()
+                if key not in ("architectures", "model_type")
+            }
+            hparams = {**hparams, **language_hparams}
+
+        kwargs["hparams"] = hparams
+        super().__init__(*args, **kwargs)
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+
+        arch = self.gguf_writer.arch
+        self.gguf_writer.add_uint32(gguf.Keys.LLM.N_VQ.format(arch=arch), self.hparams["n_vq"])
+        self.gguf_writer.add_uint32(gguf.Keys.LLM.AUDIO_VOCAB_SIZE.format(arch=arch), self.hparams["audio_vocab_size"])
+        self.gguf_writer.add_uint32(gguf.Keys.LLM.AUDIO_PAD_CODE.format(arch=arch), self.hparams["audio_pad_code"])
+        self.gguf_writer.add_uint32(gguf.Keys.LLM.AUDIO_START_TOKEN_ID.format(arch=arch), self.hparams["audio_start_token_id"])
+        self.gguf_writer.add_uint32(gguf.Keys.LLM.AUDIO_END_TOKEN_ID.format(arch=arch), self.hparams["audio_end_token_id"])
+        self.gguf_writer.add_uint32(gguf.Keys.LLM.AUDIO_USER_SLOT_TOKEN_ID.format(arch=arch), self.hparams["audio_user_slot_token_id"])
+        self.gguf_writer.add_uint32(
+            gguf.Keys.LLM.AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID.format(arch=arch),
+            self.hparams["audio_assistant_gen_slot_token_id"],
+        )
+        self.gguf_writer.add_uint32(
+            gguf.Keys.LLM.AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID.format(arch=arch),
+            self.hparams["audio_assistant_delay_slot_token_id"],
+        )
+        if (sampling_rate := self.hparams.get("sampling_rate")) is not None:
+            self.gguf_writer.add_uint32(gguf.Keys.LLM.SAMPLING_RATE.format(arch=arch), sampling_rate)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        if name.startswith("language_model."):
+            name = name.replace("language_model.", "", 1)
+
+        if (match := re.fullmatch(r"emb_ext\.(\d+)\.weight", name)) is not None:
+            vq_idx = int(match.group(1))
+            yield (f"{gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.TOKEN_EMBD_AUDIO]}.{vq_idx}.weight", data_torch)
+            return
+
+        if (match := re.fullmatch(r"lm_heads\.(\d+)\.weight", name)) is not None:
+            head_idx = int(match.group(1))
+            if head_idx == 0:
+                yield (gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.OUTPUT] + ".weight", data_torch)
+            else:
+                yield (f"{gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.OUTPUT_AUDIO]}.{head_idx - 1}.weight", data_torch)
+            return
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
+
 @ModelBase.register("Qwen3MoeForCausalLM")
 class Qwen3MoeModel(Qwen2MoeModel):
     model_arch = gguf.MODEL_ARCH.QWEN3MOE

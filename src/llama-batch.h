@@ -43,6 +43,8 @@ struct llama_ubatch {
 
     //                          // size               | idx | val
     llama_token  *  token;      // [n_tokens]         | i   | id, token
+    uint32_t      n_token_audio;// architecture-specific auxiliary token channels per token
+    llama_token  *  token_audio; // [n_tokens * n_token_audio] | i * n_token_audio + c | id, audio token
     float        *  embd;       // [n_embd, n_tokens] | i   | embd
     llama_pos    *  pos;        // [n_tokens*n_pos]   | i   | pos
     int32_t      *  n_seq_id;   // [n_tokens]         | i   | -
@@ -53,6 +55,7 @@ struct llama_ubatch {
 
     struct data_t {
         std::vector<llama_token>    token;
+        std::vector<llama_token>    token_audio;
         std::vector<float>          embd;
         std::vector<llama_pos>      pos;
         std::vector<int32_t>        n_seq_id;

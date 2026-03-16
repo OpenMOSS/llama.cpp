@@ -100,6 +100,7 @@ add_library(llama
             models/minicpm3.cpp
             models/minimax-m2.cpp
             models/mistral3.cpp
+            models/moss-tts-delay.cpp
             models/modern-bert.cpp
             models/mpt.cpp
             models/nemotron-h.cpp

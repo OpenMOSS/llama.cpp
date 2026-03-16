@@ -1005,6 +1005,29 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     default: type = LLM_TYPE_UNKNOWN;
                 }
             } break;
+        case LLM_ARCH_MOSS_TTS_DELAY:
+            {
+                ml.get_key(LLM_KV_N_VQ,             hparams.n_vq);
+                ml.get_key(LLM_KV_AUDIO_VOCAB_SIZE, hparams.audio_vocab_size);
+                ml.get_key(LLM_KV_AUDIO_PAD_CODE,   hparams.audio_pad_code);
+
+                ml.get_key(LLM_KV_AUDIO_START_TOKEN_ID,                 hparams.audio_start_token_id,                false);
+                ml.get_key(LLM_KV_AUDIO_END_TOKEN_ID,                   hparams.audio_end_token_id,                  false);
+                ml.get_key(LLM_KV_AUDIO_USER_SLOT_TOKEN_ID,             hparams.audio_user_slot_token_id,            false);
+                ml.get_key(LLM_KV_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID,    hparams.audio_assistant_gen_slot_token_id,   false);
+                ml.get_key(LLM_KV_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID,  hparams.audio_assistant_delay_slot_token_id, false);
+                ml.get_key(LLM_KV_SAMPLING_RATE,                        hparams.sampling_rate,                       false);
+
+                ml.get_key(LLM_KV_POOLING_TYPE, hparams.pooling_type, false);
+                ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+                switch (hparams.n_layer) {
+                    case 28: type = hparams.n_embd == 1024 ? LLM_TYPE_0_6B : LLM_TYPE_1_7B; break;
+                    case 36: type = hparams.n_embd == 2560 ? LLM_TYPE_4B : LLM_TYPE_8B; break;
+                    case 40: type = LLM_TYPE_14B; break;
+                    case 64: type = LLM_TYPE_32B; break;
+                    default: type = LLM_TYPE_UNKNOWN;
+                }
+            } break;
         case LLM_ARCH_MAINCODER:
             {
                 ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
@@ -3639,6 +3662,53 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
 
                     // output rerank head
                     cls_out = create_tensor(tn(LLM_TENSOR_CLS_OUT, "weight"), {n_embd, hparams.n_cls_out}, TENSOR_NOT_REQUIRED);
+
+                    for (int i = 0; i < n_layer; ++i) {
+                        auto & layer = layers[i];
+
+                        layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, 0);
+
+                        layer.wq = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight", i), {n_embd, n_embd_head_k * n_head}, 0);
+                        layer.wk = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight", i), {n_embd, n_embd_gqa}, 0);
+                        layer.wv = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight", i), {n_embd, n_embd_gqa}, 0);
+                        layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_k * n_head, n_embd}, 0);
+
+                        layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), {n_embd_head_k}, 0);
+                        layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), {n_embd_head_k}, 0);
+
+                        layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
+                        layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
+                        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
+                        layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
+                    }
+                } break;
+            case LLM_ARCH_MOSS_TTS_DELAY:
+                {
+                    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
+
+                    const int64_t n_audio_vocab =
+                        hparams.audio_vocab_size > 0 ? std::max<int64_t>(hparams.audio_vocab_size + 1, hparams.audio_pad_code + 1) : 0;
+
+                    if (hparams.n_vq == 0) {
+                        throw std::runtime_error("n_vq must be > 0 for MOSS_TTS_DELAY");
+                    }
+                    if (n_audio_vocab == 0) {
+                        throw std::runtime_error("audio_vocab_size must be > 0 for MOSS_TTS_DELAY");
+                    }
+
+                    tok_embd_audio.resize(hparams.n_vq);
+                    output_audio.resize(hparams.n_vq);
+
+                    for (uint32_t i = 0; i < hparams.n_vq; ++i) {
+                        tok_embd_audio[i] = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD_AUDIO, "weight", -1, i), {n_embd, n_audio_vocab}, 0);
+                    }
+
+                    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
+                    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, 0);
+
+                    for (uint32_t i = 0; i < hparams.n_vq; ++i) {
+                        output_audio[i] = create_tensor(tn(LLM_TENSOR_OUTPUT_AUDIO, "weight", -1, i), {n_embd, n_audio_vocab}, 0);
+                    }
 
                     for (int i = 0; i < n_layer; ++i) {
                         auto & layer = layers[i];
@@ -7683,6 +7753,14 @@ size_t llama_model::n_devices() const {
     return devices.size();
 }
 
+uint32_t llama_model::n_logits() const {
+    if (arch == LLM_ARCH_MOSS_TTS_DELAY) {
+        return vocab.n_tokens() + hparams.n_vq * (hparams.audio_vocab_size + 1);
+    }
+
+    return vocab.n_tokens();
+}
+
 uint32_t llama_model::n_gpu_layers() const {
     return params.n_gpu_layers >= 0 ? params.n_gpu_layers : hparams.n_layer + 1;
 }
@@ -7867,6 +7945,13 @@ void llama_model::print_info() const {
 
     if (arch == LLM_ARCH_QWEN3MOE || arch == LLM_ARCH_OPENAI_MOE || arch == LLM_ARCH_QWEN3VLMOE || arch == LLM_ARCH_RND1) {
         LLAMA_LOG_INFO("%s: n_ff_exp              = %d\n",     __func__, hparams.n_ff_exp);
+    }
+
+    if (arch == LLM_ARCH_MOSS_TTS_DELAY) {
+        LLAMA_LOG_INFO("%s: n_vq                  = %u\n",     __func__, hparams.n_vq);
+        LLAMA_LOG_INFO("%s: audio_vocab_size      = %u\n",     __func__, hparams.audio_vocab_size);
+        LLAMA_LOG_INFO("%s: audio_pad_code        = %u\n",     __func__, hparams.audio_pad_code);
+        LLAMA_LOG_INFO("%s: sampling_rate         = %u\n",     __func__, hparams.sampling_rate);
     }
 
     if (arch == LLM_ARCH_MINICPM ||
@@ -8276,6 +8361,10 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
         case LLM_ARCH_QWEN3:
             {
                 llm = std::make_unique<llm_build_qwen3>(*this, params);
+            } break;
+        case LLM_ARCH_MOSS_TTS_DELAY:
+            {
+                llm = std::make_unique<llm_build_moss_tts_delay>(*this, params);
             } break;
         case LLM_ARCH_QWEN3MOE:
             {
@@ -8859,6 +8948,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_DREAM:
         case LLM_ARCH_QWEN2MOE:
         case LLM_ARCH_QWEN3:
+        case LLM_ARCH_MOSS_TTS_DELAY:
         case LLM_ARCH_QWEN3MOE:
         case LLM_ARCH_LLADA_MOE:
         case LLM_ARCH_RND1:

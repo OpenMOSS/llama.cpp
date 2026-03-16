@@ -219,6 +219,8 @@ extern "C" {
     // The provided arrays (i.e. token, embd, pos, etc.) must have size of n_tokens
     //
     // - token  : the token ids of the input (used when embd is NULL)
+    // - token_audio: optional auxiliary token channels, flattened as [n_tokens, n_token_audio]
+    //                this is currently used by architectures with summed multi-channel embeddings
     // - embd   : token embeddings (i.e. float vector of size n_embd) (used when token is NULL)
     // - pos    : the positions of the respective token in the sequence
     //            (if set to NULL, the token position will be tracked automatically by llama_encode/llama_decode)
@@ -234,6 +236,8 @@ extern "C" {
         int32_t n_tokens;
 
         llama_token  *  token;
+        int32_t       n_token_audio;
+        llama_token  *  token_audio;
         float        *  embd;
         llama_pos    *  pos;
         int32_t      *  n_seq_id;

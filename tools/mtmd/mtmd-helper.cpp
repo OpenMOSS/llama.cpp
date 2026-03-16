@@ -136,6 +136,8 @@ struct decode_embd_batch {
         batch = {
             /*n_tokens       =*/ n_tokens,
             /*tokens         =*/ nullptr,
+            /*n_token_audio  =*/ 0,
+            /*token_audio    =*/ nullptr,
             /*embd           =*/ embd,
             /*pos            =*/ pos.data(),
             /*n_seq_id       =*/ n_seq_id.data(),
@@ -216,6 +218,8 @@ struct decode_embd_batch {
         return {
             /*n_tokens       =*/ n_tokens,
             /*tokens         =*/ nullptr,
+            /*n_token_audio  =*/ 0,
+            /*token_audio    =*/ nullptr,
             /*embd           =*/ batch.embd     + offset * n_mmproj_embd,
             /*pos            =*/ pos_ptr,
             /*n_seq_id       =*/ batch.n_seq_id + offset,

@@ -567,9 +567,14 @@ struct llm_graph_params {
             ubatch.n_seq_tokens == other.ubatch.n_seq_tokens &&
             ubatch.n_seqs       == other.ubatch.n_seqs &&
             ubatch.n_seqs_unq   == other.ubatch.n_seqs_unq &&
+            ubatch.n_token_audio == other.ubatch.n_token_audio &&
             (
                 (!ubatch.token && !other.ubatch.token) ||
                 (!ubatch.embd  && !other.ubatch.embd)
+            ) &&
+            (
+                (!ubatch.token_audio && !other.ubatch.token_audio) ||
+                (ubatch.token_audio && other.ubatch.token_audio)
             );
 
         // when we split the batch using "equal_seqs" we have to verify that the participating sequences are the same

@@ -68,6 +68,18 @@ struct llama_hparams {
 
     uint32_t n_shortconv_l_cache  = 0;
 
+    // MOSS-TTS-Delay
+    uint32_t n_vq             = 0;
+    uint32_t audio_vocab_size = 0;
+    uint32_t audio_pad_code   = 0;
+    uint32_t sampling_rate    = 0;
+
+    uint32_t audio_start_token_id                = 0;
+    uint32_t audio_end_token_id                  = 0;
+    uint32_t audio_user_slot_token_id            = 0;
+    uint32_t audio_assistant_gen_slot_token_id   = 0;
+    uint32_t audio_assistant_delay_slot_token_id = 0;
+
     std::array<uint32_t, LLAMA_MAX_LAYERS> n_head_arr;
     std::array<uint32_t, LLAMA_MAX_LAYERS> n_head_kv_arr;
     std::array<uint32_t, LLAMA_MAX_LAYERS> n_ff_arr;

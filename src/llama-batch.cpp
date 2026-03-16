@@ -55,6 +55,21 @@ bool llama_batch_allocr::init(
         }
     }
 
+    if ((batch.token_audio == nullptr) != (batch.n_token_audio == 0)) {
+        LLAMA_LOG_ERROR("%s: token_audio and n_token_audio must either both be set or both be empty\n", __func__);
+        return false;
+    }
+
+    if (batch.token_audio && !batch.token) {
+        LLAMA_LOG_ERROR("%s: token_audio currently requires token inputs to also be provided\n", __func__);
+        return false;
+    }
+
+    if (batch.token_audio && batch.embd) {
+        LLAMA_LOG_ERROR("%s: token_audio is not supported together with embd inputs\n", __func__);
+        return false;
+    }
+
     if (batch.seq_id) {
         for (int32_t i = 0; i < batch.n_tokens; ++i) {
             for (int32_t s = 0; s < batch.n_seq_id[i]; ++s) {
@@ -217,6 +232,8 @@ bool llama_batch_allocr::init(
             /*.n_seqs_unq   =*/ (uint32_t) this->seq_id_unq.size(),
             /*.n_pos        =*/ n_pos_per_embd,
             /*.token        =*/ batch.token,
+            /*.n_token_audio=*/ (uint32_t) batch.n_token_audio,
+            /*.token_audio  =*/ batch.token_audio,
             /*.embd         =*/ batch.embd,
             /*.pos          =*/ batch.pos,
             /*.n_seq_id     =*/ batch.n_seq_id,
@@ -399,6 +416,7 @@ llama_ubatch llama_batch_allocr::ubatch_reserve(uint32_t n_seq_tokens, uint32_t 
     auto udata = std::make_shared<llama_ubatch::data_t>();
 
     udata->token     .resize(n_tokens);
+    udata->token_audio.clear();
     udata->embd      .clear();
     udata->pos       .resize(n_pos_all);
     udata->n_seq_id  .resize(n_tokens);
@@ -421,6 +439,8 @@ llama_ubatch llama_batch_allocr::ubatch_reserve(uint32_t n_seq_tokens, uint32_t 
         /*.n_pos        =*/ n_pos_per_embd,
 
         /*.token        =*/ udata->token.data(),
+        /*.n_token_audio=*/ 0,
+        /*.token_audio  =*/ nullptr,
         /*.embd         =*/ nullptr,
         /*.pos          =*/ udata->pos.data(),
         /*.n_seq_id     =*/ udata->n_seq_id.data(),
@@ -687,8 +707,10 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
 
     const int64_t n_embd_all = batch.embd ? (int64_t) n_tokens*n_embd : 0;
     const int64_t n_pos_all  =              (int64_t) n_tokens*n_pos_per_embd;
+    const int64_t n_token_audio_all = batch.token_audio ? (int64_t) n_tokens*batch.n_token_audio : 0;
 
     udata->token     .resize(n_tokens);
+    udata->token_audio.resize(n_token_audio_all);
     udata->embd      .resize(n_embd_all);
     udata->pos       .resize(n_pos_all);
     udata->n_seq_id  .resize(n_tokens);
@@ -704,6 +726,13 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
     for (size_t i = 0; i < idxs.size(); ++i) {
         if (batch.token) {
             udata->token[i] = batch.token[idxs[i]];
+        }
+
+        if (batch.token_audio) {
+            memcpy(
+                    udata->token_audio.data() + i*batch.n_token_audio,
+                    batch.token_audio + (int64_t) idxs[i]*batch.n_token_audio,
+                    batch.n_token_audio*sizeof(llama_token));
         }
 
         if (batch.embd) {
@@ -756,6 +785,8 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
         /*.n_pos        =*/ n_pos_per_embd,
 
         /*.token        =*/ batch.token ? udata->token.data() : nullptr,
+        /*.n_token_audio=*/ (uint32_t) batch.n_token_audio,
+        /*.token_audio  =*/ batch.token_audio ? udata->token_audio.data() : nullptr,
         /*.embd         =*/ batch.embd ? udata->embd.data() : nullptr,
         /*.pos          =*/ udata->pos.data(),
         /*.n_seq_id     =*/ udata->n_seq_id.data(),
@@ -805,6 +836,8 @@ void llama_batch_allocr::ubatch_print(const llama_ubatch & ubatch, int debug) {
         ss_seq_idx    << "]";
 
         LLAMA_LOG_DEBUG("%s:   token      = %p\n", __func__, (void *) ubatch.token);
+        LLAMA_LOG_DEBUG("%s:   n_token_audio = %u\n", __func__, ubatch.n_token_audio);
+        LLAMA_LOG_DEBUG("%s:   token_audio = %p\n", __func__, (void *) ubatch.token_audio);
         LLAMA_LOG_DEBUG("%s:   embd       = %p\n", __func__, (void *) ubatch.embd);
         LLAMA_LOG_DEBUG("%s:   pos        = %p\n", __func__, (void *) ubatch.pos);
         LLAMA_LOG_DEBUG("%s:   n_seq_id   = %p\n", __func__, (void *) ubatch.n_seq_id);
@@ -866,6 +899,8 @@ struct llama_batch llama_batch_get_one(
     return {
         /*n_tokens =*/ n_tokens,
         /*tokens   =*/ tokens,
+        /*n_token_audio =*/ 0,
+        /*token_audio   =*/ nullptr,
         /*embd     =*/ nullptr,
         /*pos      =*/ nullptr,
         /*n_seq_id =*/ nullptr,
@@ -878,6 +913,8 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
     llama_batch batch = {
         /*n_tokens =*/ 0,
         /*tokens   =*/ nullptr,
+        /*n_token_audio =*/ 0,
+        /*token_audio   =*/ nullptr,
         /*embd     =*/ nullptr,
         /*pos      =*/ nullptr,
         /*n_seq_id =*/ nullptr,
@@ -906,6 +943,7 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
 
 void llama_batch_free(struct llama_batch batch) {
     if (batch.token)    free(batch.token);
+    if (batch.token_audio) free(batch.token_audio);
     if (batch.embd)     free(batch.embd);
     if (batch.pos)      free(batch.pos);
     if (batch.n_seq_id) free(batch.n_seq_id);
