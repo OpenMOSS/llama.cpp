@@ -24,6 +24,7 @@
 4. helper scripts 需要的 Python 包：
    - `numpy`
    - `soundfile`
+   - `tokenizers`
    - `onnxruntime`
 
 ## 编译
@@ -55,7 +56,24 @@ cmake --build build --target llama-moss-tts -j
 
 例如：
 
-- `out/stage1a_moss_delay_firstclass_f16.gguf`
+- `out/moss_delay_firstclass_f16.gguf`
+
+你可以直接从完整的 Hugging Face MOSS-TTS 模型目录生成它：
+
+```bash
+huggingface-cli download OpenMOSS-Team/MOSS-TTS --local-dir /path/to/MOSS-TTS-hf
+
+python convert_hf_to_gguf.py \
+    /path/to/MOSS-TTS-hf \
+    --outfile /path/to/moss_delay_firstclass_f16.gguf \
+    --outtype f16
+```
+
+重要说明：
+
+- 这里 `--model-gguf` 使用的是一个**特殊的 first-class MOSS-TTS-Delay GGUF**，它需要像上面这样，从完整的 `OpenMOSS-Team/MOSS-TTS` Hugging Face 模型目录直接转换得到。
+- 它**不是** `OpenMOSS/MOSS-TTS-GGUF` 仓库里的通用 GGUF 文件。
+- 除非某个文件被明确说明为适配这套 `llama.cpp` first-class 实现的 MOSS-TTS-Delay GGUF，否则不要把 `OpenMOSS/MOSS-TTS-GGUF` 里的文件直接拿来给这条 e2e 流水线使用。
 
 ### 第二步：准备 tokenizer 目录
 
@@ -147,7 +165,7 @@ python tools/tts/moss-tts-firstclass-e2e.py \
 | `--onnx-encoder` | path | 音频 tokenizer encoder ONNX |
 | `--onnx-decoder` | path | 音频 tokenizer decoder ONNX |
 | `--text` / `--text-file` | string / path | 输入文本，二选一 |
-| `--reference-audio` | path | 可选的 24 kHz 参考音频 |
+| `--reference-audio` | path | 可选参考音频；如果提供，必须是 24 kHz |
 | `--language` | `zh` / `en` / tag | 传给 prompt builder 的语言标签 |
 | `--max-new-tokens` | int | 最大生成步数 |
 | `--text-temperature` | float | 文本通道采样温度，默认 `1.5` |

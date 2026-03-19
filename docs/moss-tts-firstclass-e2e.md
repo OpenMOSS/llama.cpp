@@ -24,6 +24,7 @@ Unlike the older `moss_tts_delay/llama_cpp` backend in the `MOSS-TTS` repository
 4. Python packages required by the helper scripts:
    - `numpy`
    - `soundfile`
+   - `tokenizers`
    - `onnxruntime`
 
 ## Build
@@ -55,7 +56,24 @@ You need a first-class MOSS-TTS-Delay GGUF model that already contains:
 
 For example:
 
-- `out/stage1a_moss_delay_firstclass_f16.gguf`
+- `out/moss_delay_firstclass_f16.gguf`
+
+You can generate it directly from the full Hugging Face MOSS-TTS model directory:
+
+```bash
+huggingface-cli download OpenMOSS-Team/MOSS-TTS --local-dir /path/to/MOSS-TTS-hf
+
+python convert_hf_to_gguf.py \
+    /path/to/MOSS-TTS-hf \
+    --outfile /path/to/moss_delay_firstclass_f16.gguf \
+    --outtype f16
+```
+
+Important:
+
+- The `--model-gguf` file used by this e2e pipeline is a **special first-class MOSS-TTS-Delay GGUF** generated from the full `OpenMOSS-Team/MOSS-TTS` Hugging Face model directory with the command above.
+- It is **not** the same thing as a generic GGUF downloaded from `OpenMOSS/MOSS-TTS-GGUF`.
+- Do not point this pipeline at a file from `OpenMOSS/MOSS-TTS-GGUF` unless that file was explicitly produced as a first-class MOSS-TTS-Delay GGUF for this `llama.cpp` implementation.
 
 ### Step 2: Prepare the tokenizer directory
 
@@ -146,7 +164,7 @@ python tools/tts/moss-tts-firstclass-e2e.py \
 | `--onnx-encoder` | path | Audio tokenizer encoder ONNX |
 | `--onnx-decoder` | path | Audio tokenizer decoder ONNX |
 | `--text` / `--text-file` | string / path | Input text, choose exactly one |
-| `--reference-audio` | path | Optional 24 kHz reference audio |
+| `--reference-audio` | path | Optional reference audio; if provided, it must be 24 kHz |
 | `--language` | `zh` / `en` / tag | Language tag passed to the prompt builder |
 | `--max-new-tokens` | int | Maximum generation steps |
 | `--text-temperature` | float | Text-channel sampling temperature, default `1.5` |
