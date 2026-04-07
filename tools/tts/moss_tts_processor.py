@@ -78,7 +78,8 @@ def build_generation_prompt(
     im_start_tok = _get_special_token_str(tokenizer, IM_START_TOKEN_ID)
     im_end_tok = _get_special_token_str(tokenizer, IM_END_TOKEN_ID)
 
-    has_ref = reference_codes is not None and reference_codes.shape[0] > 0
+    ref_frame_count = int(reference_codes.shape[0]) if reference_codes is not None else 0
+    has_ref = ref_frame_count > 0
     ref_str = f"[S1]:\n{AUDIO_PLACEHOLDER}" if has_ref else "None"
 
     user_content = (
@@ -94,7 +95,7 @@ def build_generation_prompt(
         f"</user_inst>"
     )
 
-    ref_lengths = [reference_codes.shape[0]] if has_ref else []
+    ref_lengths = [ref_frame_count] if has_ref else []
     user_content = _replace_audio_placeholders(
         user_content,
         ref_lengths,
@@ -106,7 +107,10 @@ def build_generation_prompt(
     )
 
     full_text = f"{im_start_tok}user\n{user_content}{im_end_tok}\n{im_start_tok}assistant\n"
-    ref_audio_list = [reference_codes] if has_ref else []
+    ref_audio_list: list[np.ndarray] = []
+    if has_ref:
+        assert reference_codes is not None
+        ref_audio_list.append(reference_codes)
     unified_codes = _get_unified_codes(tokenizer, full_text, ref_audio_list)
 
     assistant_gen = f"{audio_start_tok}"
