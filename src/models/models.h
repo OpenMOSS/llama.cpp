@@ -699,6 +699,14 @@ struct llm_build_t5_enc : public llm_graph_context {
     llm_build_t5_enc(const llama_model & model, const llm_graph_params & params);
 };
 
+struct llm_build_moss_tts_audio_encoder : public llm_graph_context {
+    llm_build_moss_tts_audio_encoder(const llama_model & model, const llm_graph_params & params);
+};
+
+struct llm_build_moss_tts_audio_decoder : public llm_graph_context {
+    llm_build_moss_tts_audio_decoder(const llama_model & model, const llm_graph_params & params);
+};
+
 struct llm_build_wavtokenizer_dec : public llm_graph_context {
     llm_build_wavtokenizer_dec(const llama_model & model, const llm_graph_params & params);
 };

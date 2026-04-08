@@ -4,24 +4,21 @@
 
 本文档说明当前 `llama.cpp` 仓库中的 **first-class** MOSS-TTS 端到端推理链路。
 
-这条链路使用：
+目前有两种运行方式：
 
-- **llama.cpp** 和 `llama-moss-tts` 运行 first-class MOSS-TTS-Delay GGUF 模型
-- **ONNX Runtime** 完成参考音频编码和最终波形解码
-- **Python helper scripts** 负责 prompt 构建和整条链路编排
-- 本地 **MOSS-TTS** 仓库 checkout 提供 prompt builder 和 ONNX tokenizer Python 模块
+- **推荐的原生路径**：三个模型都在 `llama.cpp` 里运行
+  - `moss-tts-delay` backbone 通过 `llama_decode()`
+  - `moss-tts-audio-encoder` 通过 `llama_encode()`
+  - `moss-tts-audio-decoder` 通过 `llama_encode()`
+- **Hybrid wrapper 路径**：backbone 在 `llama.cpp`，音频 tokenizer 仍走 ONNX，由 Python 统一编排
 
-与 `MOSS-TTS` 仓库中较早的 `moss_tts_delay/llama_cpp` 后端不同，这条链路把多通道输入、transformer backbone、多头输出以及 delay-pattern decode 都放进了 `llama.cpp`。Python 只负责准备输入和调用 ONNX 音频编解码器。
+与 `MOSS-TTS` 仓库中较早的 `moss_tts_delay/llama_cpp` 后端不同，这条链路把多通道输入、transformer backbone、多头输出以及 delay-pattern decode 都放进了 `llama.cpp`。
 
 ## 前置条件
 
 1. **llama.cpp** 已从源码编译，并包含 `llama-moss-tts` 目标
-2. **Python >= 3.10**
-3. 本地存在一个 **MOSS-TTS** checkout，可以通过以下任一方式提供：
-   - 位于当前仓库根目录旁边的 `../MOSS-TTS`
-   - 通过 `--moss-tts-dir` 指定
-   - 通过 `MOSS_TTS_DIR` 或 `MOSS_TTS_ROOT` 指定
-4. helper scripts 需要的 Python 包：
+2. **Python >= 3.10**，如果你要使用 hybrid wrapper 或转换脚本
+3. hybrid helper scripts 需要的 Python 包：
    - `numpy`
    - `soundfile`
    - `tokenizers`
@@ -29,22 +26,37 @@
 
 ## 编译
 
+### 仅 CPU 构建
+
 ```bash
 cd /path/to/llama.cpp
 
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target llama-moss-tts -j
 ```
 
-编译产物为：
+产物：
 
 - `build/bin/llama-moss-tts`
 
-如果你希望在运行时自动构建，也可以在 e2e 脚本里传 `--build`。
+### CUDA 构建
+
+```bash
+cd /path/to/llama.cpp
+
+cmake -S . -B build-cuda -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON
+cmake --build build-cuda --target llama-moss-tts -j
+```
+
+产物：
+
+- `build-cuda/bin/llama-moss-tts`
+
+如果你希望在 hybrid wrapper 运行时自动构建，也可以传 `--build`。
 
 ## 权重准备
 
-### 第一步：准备 first-class GGUF 模型
+### 第一步：准备 backbone GGUF
 
 需要一个已经包含以下内容的 first-class MOSS-TTS-Delay GGUF：
 
@@ -75,7 +87,30 @@ python convert_hf_to_gguf.py \
 - 它**不是** `OpenMOSS/MOSS-TTS-GGUF` 仓库里的通用 GGUF 文件。
 - 除非某个文件被明确说明为适配这套 `llama.cpp` first-class 实现的 MOSS-TTS-Delay GGUF，否则不要把 `OpenMOSS/MOSS-TTS-GGUF` 里的文件直接拿来给这条 e2e 流水线使用。
 
-### 第二步：准备 tokenizer 目录
+### 第二步：准备原生 audio encoder / decoder GGUF
+
+还需要两个额外的 GGUF 文件：
+
+- `moss-tts-audio-encoder`
+- `moss-tts-audio-decoder`
+
+它们可以从 Hugging Face 的 `MOSS-Audio-Tokenizer` 目录转换得到：
+
+```bash
+huggingface-cli download OpenMOSS-Team/MOSS-Audio-Tokenizer --local-dir /path/to/MOSS-Audio-Tokenizer-hf
+
+python convert_moss_audio_tokenizer_split_to_gguf.py \
+    /path/to/MOSS-Audio-Tokenizer-hf \
+    --outdir /path/to/out \
+    --outtype f16
+```
+
+典型输出：
+
+- `/path/to/out/moss_tts_audio_encoder_f16.gguf`
+- `/path/to/out/moss_tts_audio_decoder_f16.gguf`
+
+### 第三步：为 hybrid wrapper 准备 tokenizer 目录
 
 需要一个至少包含以下文件的 tokenizer 目录：
 
@@ -85,7 +120,7 @@ python convert_hf_to_gguf.py \
 
 - `weights/extracted/qwen3_backbone/`
 
-### 第三步：准备 ONNX 音频编解码器
+### 第四步：为 hybrid wrapper 准备 ONNX 音频编解码器
 
 需要同时提供两个 ONNX 文件：
 
@@ -97,34 +132,70 @@ python convert_hf_to_gguf.py \
 - `weights/MOSS-Audio-Tokenizer-ONNX/encoder.onnx`
 - `weights/MOSS-Audio-Tokenizer-ONNX/decoder.onnx`
 
-### 第四步：让脚本能找到 MOSS-TTS 仓库
-
-helper scripts 会导入：
-
-- `moss_tts_delay.llama_cpp.processor`
-- `moss_audio_tokenizer.onnx`
-
-可以通过以下方式提供 repo 路径：
-
-```bash
-export MOSS_TTS_DIR=/path/to/MOSS-TTS
-```
-
-或者：
-
-```bash
-python tools/tts/moss-tts-firstclass-e2e.py --moss-tts-dir /path/to/MOSS-TTS ...
-```
-
 ## 使用方式
 
-### 命令行
+### 当前原生运行方式：三个 GGUF
+
+这是当前推荐路径。
+
+#### CPU
+
+```bash
+# 纯文本 TTS，CPU 运行
+build/bin/llama-moss-tts \
+    -m /path/to/moss_delay_firstclass_f16.gguf \
+    --audio-decoder-model /path/to/moss_tts_audio_decoder_f16.gguf \
+    --text "你好，世界！" \
+    --wav-out /path/to/output.wav
+
+# 音色克隆，CPU 运行
+build/bin/llama-moss-tts \
+    -m /path/to/moss_delay_firstclass_f16.gguf \
+    --audio-encoder-model /path/to/moss_tts_audio_encoder_f16.gguf \
+    --audio-decoder-model /path/to/moss_tts_audio_decoder_f16.gguf \
+    --text-file /path/to/text.txt \
+    --reference-audio /path/to/reference_24k.wav \
+    --wav-out /path/to/output.wav
+```
+
+#### GPU
+
+```bash
+# 纯文本 TTS，GPU 运行
+build-cuda/bin/llama-moss-tts \
+    -m /path/to/moss_delay_firstclass_f16.gguf \
+    --audio-decoder-model /path/to/moss_tts_audio_decoder_f16.gguf \
+    --text "你好，世界！" \
+    --wav-out /path/to/output.wav \
+    -ngl -1
+
+# 音色克隆，GPU 运行
+build-cuda/bin/llama-moss-tts \
+    -m /path/to/moss_delay_firstclass_f16.gguf \
+    --audio-encoder-model /path/to/moss_tts_audio_encoder_f16.gguf \
+    --audio-decoder-model /path/to/moss_tts_audio_decoder_f16.gguf \
+    --text-file /path/to/text.txt \
+    --reference-audio /path/to/reference_24k.wav \
+    --wav-out /path/to/output.wav \
+    -ngl -1
+```
+
+说明：
+
+- `--reference-audio` 必须是 24 kHz 单声道 wav。
+- `-ngl -1` 表示尽可能把可 offload 的层全部放到 GPU。
+- 如果你使用的是 `build-cuda/bin/llama-moss-tts` 但想强制走 CPU，可以传 `-ngl 0`。
+
+### Hybrid wrapper：backbone 走 GGUF，音频 tokenizer 走 ONNX
+
+这条路径仍然适合做 parity 检查和中间产物调试。
+
+#### 命令行
 
 ```bash
 # 音色克隆：text + reference audio -> wav
 python tools/tts/moss-tts-firstclass-e2e.py \
     --model-gguf /path/to/moss_delay_firstclass.gguf \
-    --moss-tts-dir /path/to/MOSS-TTS \
     --tokenizer-dir /path/to/tokenizer_dir \
     --onnx-encoder /path/to/encoder.onnx \
     --onnx-decoder /path/to/decoder.onnx \
@@ -135,7 +206,6 @@ python tools/tts/moss-tts-firstclass-e2e.py \
 # 不带参考音频的直接生成
 python tools/tts/moss-tts-firstclass-e2e.py \
     --model-gguf /path/to/moss_delay_firstclass.gguf \
-    --moss-tts-dir /path/to/MOSS-TTS \
     --tokenizer-dir /path/to/tokenizer_dir \
     --onnx-encoder /path/to/encoder.onnx \
     --onnx-decoder /path/to/decoder.onnx \
@@ -146,7 +216,6 @@ python tools/tts/moss-tts-firstclass-e2e.py \
 python tools/tts/moss-tts-firstclass-e2e.py \
     --build \
     --model-gguf /path/to/moss_delay_firstclass.gguf \
-    --moss-tts-dir /path/to/MOSS-TTS \
     --tokenizer-dir /path/to/tokenizer_dir \
     --onnx-encoder /path/to/encoder.onnx \
     --onnx-decoder /path/to/decoder.onnx \
@@ -160,7 +229,7 @@ python tools/tts/moss-tts-firstclass-e2e.py \
 | 参数 | 取值 | 说明 |
 |------|------|------|
 | `--model-gguf` | path | first-class MOSS-TTS GGUF 模型 |
-| `--moss-tts-dir` | path | 本地 `MOSS-TTS` 仓库根目录 |
+| `--moss-tts-dir` | path | 已废弃的兼容参数；不再需要 |
 | `--tokenizer-dir` | path | 含 `tokenizer.json` 的目录 |
 | `--onnx-encoder` | path | 音频 tokenizer encoder ONNX |
 | `--onnx-decoder` | path | 音频 tokenizer decoder ONNX |
@@ -175,7 +244,40 @@ python tools/tts/moss-tts-firstclass-e2e.py \
 | `--cpu-audio-encode` | flag | 强制 ONNX 参考音频编码走 CPU |
 | `--build` | flag | 运行前构建 `llama-moss-tts` |
 
+### 原生运行参数
+
+| 参数 | 取值 | 说明 |
+|------|------|------|
+| `-m` | path | `moss-tts-delay` backbone GGUF |
+| `--audio-encoder-model` | path | 原生 `moss-tts-audio-encoder` GGUF |
+| `--audio-decoder-model` | path | 原生 `moss-tts-audio-decoder` GGUF |
+| `--text` / `--text-file` | string / path | 输入文本，二选一 |
+| `--reference-audio` | path | 可选 24 kHz reference wav |
+| `--language` | `zh` / `en` / tag | 传给 prompt builder 的语言标签 |
+| `--max-new-tokens` | int | 最大生成步数 |
+| `--gpu-layers` / `-ngl` | `-1` / `0` / `N` | GPU offload 层数 |
+| `--wav-out` | path | 输出 wav 路径 |
+
 ## 架构
+
+### 原生三 GGUF 路径
+
+```text
+输入文本（+ 可选 reference wav）
+  |
+  v
+llama-moss-tts
+  |
+  |- 文本 prompt 打包
+  |- 可选：reference wav -> moss-tts-audio-encoder -> reference audio codes
+  |- moss-tts-delay backbone，经由 llama_decode()
+  |- 多头采样 + C++ delay-pattern decode
+  |- raw audio codes -> moss-tts-audio-decoder -> waveform
+  v
+wav
+```
+
+### Hybrid wrapper 路径
 
 ```text
 输入文本（+ 可选 reference wav）
@@ -185,7 +287,7 @@ moss-tts-build-generation-ref.py
   |
   |- 用 Qwen3 tokenizer 处理文本
   |- 可选：用 ONNX 把 reference wav 编成 audio codes
-  |- 调用本地 MOSS-TTS repo 的 prompt builder
+  |- 用仓库内置的轻量 MOSS-TTS processor 构建 packed prompt
   v
 generation.ref.bin
   |
@@ -233,11 +335,14 @@ llama.cpp/
 ├── docs/
 │   ├── moss-tts-firstclass-e2e.md
 │   └── moss-tts-firstclass-e2e_zh.md
+├── convert_moss_audio_tokenizer_split_to_gguf.py
 ├── tools/tts/
 │   ├── moss-tts-firstclass-e2e.py       # 端到端 wrapper
 │   ├── moss-tts-build-generation-ref.py # prompt / input 构建器
 │   ├── moss-tts-audio-decode.py         # ONNX 音频解码 helper
-│   └── moss-tts.cpp                     # llama-moss-tts 实现
-└── build/bin/
+│   └── run-moss-tts-delay.cpp           # llama-moss-tts 实现
+├── build/bin/
+│   └── llama-moss-tts
+└── build-cuda/bin/
     └── llama-moss-tts
 ```

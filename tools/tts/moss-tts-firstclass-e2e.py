@@ -13,8 +13,9 @@ from pathlib import Path
 
 
 def run_cmd(cmd: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    print("+", shlex.join(cmd), flush=True)
-    return subprocess.run(cmd, env=env, check=False)
+    cmd_str = shlex.join(cmd)
+    print("+", cmd_str, flush=True)
+    return subprocess.run(cmd_str, env=env, check=False, shell=True)
 
 
 def need_file(path: Path, name: str) -> None:
@@ -32,7 +33,11 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--model-gguf", default=os.getenv("MODEL_GGUF", ""))
-    parser.add_argument("--moss-tts-dir", default=os.getenv("MOSS_TTS_DIR", os.getenv("MOSS_TTS_ROOT", "")))
+    parser.add_argument(
+        "--moss-tts-dir",
+        default=os.getenv("MOSS_TTS_DIR", os.getenv("MOSS_TTS_ROOT", "")),
+        help="Deprecated compatibility flag; the first-class helpers no longer require a MOSS-TTS checkout.",
+    )
     parser.add_argument("--tokenizer-dir", default=os.getenv("TOKENIZER_DIR", ""))
     parser.add_argument("--onnx-encoder", default=os.getenv("ONNX_ENCODER", ""))
     parser.add_argument("--onnx-decoder", default=os.getenv("ONNX_DECODER", ""))
@@ -82,7 +87,6 @@ def main() -> int:
     onnx_decoder = Path(args.onnx_decoder).expanduser().resolve()
     python_bin = Path(args.python_bin).expanduser().resolve()
     output_wav = Path(args.output_wav).expanduser().resolve()
-    moss_tts_dir = Path(args.moss_tts_dir).expanduser().resolve() if args.moss_tts_dir else None
 
     need_file(python_bin, "python binary")
     need_file(model_gguf, "first-class model gguf")
@@ -91,8 +95,6 @@ def main() -> int:
     need_file(onnx_decoder, "ONNX decoder")
     need_file(build_ref_script, "generation-ref builder")
     need_file(decode_script, "audio decode helper")
-    if moss_tts_dir is not None and not moss_tts_dir.is_dir():
-        raise FileNotFoundError(f"missing MOSS-TTS repo: {moss_tts_dir}")
     if args.text_file:
         need_file(Path(args.text_file).expanduser().resolve(), "text file")
     if args.reference_audio:
@@ -119,12 +121,6 @@ def main() -> int:
     need_file(llama_bin, "llama-moss-tts binary")
     output_wav.parent.mkdir(parents=True, exist_ok=True)
     shared_env = os.environ.copy()
-    if moss_tts_dir is not None:
-        shared_env["MOSS_TTS_DIR"] = str(moss_tts_dir)
-        old_pythonpath = shared_env.get("PYTHONPATH")
-        shared_env["PYTHONPATH"] = (
-            f"{moss_tts_dir}{os.pathsep}{old_pythonpath}" if old_pythonpath else str(moss_tts_dir)
-        )
 
     with tempfile.TemporaryDirectory(prefix="moss-tts-firstclass-") as tmpdir:
         tmpdir_path = Path(tmpdir)

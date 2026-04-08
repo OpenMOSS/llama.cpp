@@ -36,6 +36,8 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_QWEN2VL,          "qwen2vl"          },
     { LLM_ARCH_QWEN3,            "qwen3"            },
     { LLM_ARCH_MOSS_TTS_DELAY,   "moss-tts-delay"   },
+    { LLM_ARCH_MOSS_TTS_AUDIO_ENCODER, "moss-tts-audio-encoder" },
+    { LLM_ARCH_MOSS_TTS_AUDIO_DECODER, "moss-tts-audio-decoder" },
     { LLM_ARCH_QWEN3MOE,         "qwen3moe"         },
     { LLM_ARCH_QWEN3NEXT,        "qwen3next"        },
     { LLM_ARCH_QWEN3VL,          "qwen3vl"          },
@@ -548,6 +550,21 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_INDEXER_PROJ,                           "blk.%d.indexer.proj" },
     { LLM_TENSOR_INDEXER_ATTN_K,                         "blk.%d.indexer.attn_k" },
     { LLM_TENSOR_INDEXER_ATTN_Q_B,                       "blk.%d.indexer.attn_q_b" },
+    { LLM_TENSOR_MOSS_AUDIO_BLOCK_INPUT_PROJ,            "blk.%d.input_proj" },
+    { LLM_TENSOR_MOSS_AUDIO_BLOCK_OUTPUT_PROJ,           "blk.%d.output_proj" },
+    { LLM_TENSOR_MOSS_AUDIO_ATTN_QKV,                    "blk.%d.layer.%d.attn_qkv" },
+    { LLM_TENSOR_MOSS_AUDIO_ATTN_OUT,                    "blk.%d.layer.%d.attn_output" },
+    { LLM_TENSOR_MOSS_AUDIO_ATTN_NORM,                   "blk.%d.layer.%d.attn_norm" },
+    { LLM_TENSOR_MOSS_AUDIO_FFN_UP,                      "blk.%d.layer.%d.ffn_up" },
+    { LLM_TENSOR_MOSS_AUDIO_FFN_DOWN,                    "blk.%d.layer.%d.ffn_down" },
+    { LLM_TENSOR_MOSS_AUDIO_FFN_NORM,                    "blk.%d.layer.%d.ffn_norm" },
+    { LLM_TENSOR_MOSS_AUDIO_ATTN_SCALE,                  "blk.%d.layer.%d.attn_scale" },
+    { LLM_TENSOR_MOSS_AUDIO_FFN_SCALE,                   "blk.%d.layer.%d.ffn_scale" },
+    { LLM_TENSOR_MOSS_AUDIO_QUANT_INPUT_PROJ,            "quantizer.input_proj" },
+    { LLM_TENSOR_MOSS_AUDIO_QUANT_OUTPUT_PROJ,           "quantizer.output_proj" },
+    { LLM_TENSOR_MOSS_AUDIO_QUANT_CODEBOOK,              "quantizer.quantizers.%d.codebook" },
+    { LLM_TENSOR_MOSS_AUDIO_QUANT_IN_PROJ,               "quantizer.quantizers.%d.in_proj" },
+    { LLM_TENSOR_MOSS_AUDIO_QUANT_OUT_PROJ,              "quantizer.quantizers.%d.out_proj" },
 };
 
 static std::set<llm_tensor> llm_get_tensor_names(llm_arch arch) {
@@ -1001,6 +1018,25 @@ static std::set<llm_tensor> llm_get_tensor_names(llm_arch arch) {
                 LLM_TENSOR_FFN_GATE,
                 LLM_TENSOR_FFN_DOWN,
                 LLM_TENSOR_FFN_UP,
+            };
+        case LLM_ARCH_MOSS_TTS_AUDIO_ENCODER:
+        case LLM_ARCH_MOSS_TTS_AUDIO_DECODER:
+            return {
+                LLM_TENSOR_MOSS_AUDIO_BLOCK_INPUT_PROJ,
+                LLM_TENSOR_MOSS_AUDIO_BLOCK_OUTPUT_PROJ,
+                LLM_TENSOR_MOSS_AUDIO_ATTN_QKV,
+                LLM_TENSOR_MOSS_AUDIO_ATTN_OUT,
+                LLM_TENSOR_MOSS_AUDIO_ATTN_NORM,
+                LLM_TENSOR_MOSS_AUDIO_FFN_UP,
+                LLM_TENSOR_MOSS_AUDIO_FFN_DOWN,
+                LLM_TENSOR_MOSS_AUDIO_FFN_NORM,
+                LLM_TENSOR_MOSS_AUDIO_ATTN_SCALE,
+                LLM_TENSOR_MOSS_AUDIO_FFN_SCALE,
+                LLM_TENSOR_MOSS_AUDIO_QUANT_INPUT_PROJ,
+                LLM_TENSOR_MOSS_AUDIO_QUANT_OUTPUT_PROJ,
+                LLM_TENSOR_MOSS_AUDIO_QUANT_CODEBOOK,
+                LLM_TENSOR_MOSS_AUDIO_QUANT_IN_PROJ,
+                LLM_TENSOR_MOSS_AUDIO_QUANT_OUT_PROJ,
             };
         case LLM_ARCH_QWEN3MOE:
         case LLM_ARCH_QWEN3VLMOE:
@@ -2792,6 +2828,21 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_NEXTN_HNORM,                {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
+    {LLM_TENSOR_MOSS_AUDIO_BLOCK_INPUT_PROJ,{LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_MOSS_AUDIO_BLOCK_OUTPUT_PROJ,{LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_MOSS_AUDIO_ATTN_QKV,        {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_MOSS_AUDIO_ATTN_OUT,        {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_MOSS_AUDIO_ATTN_NORM,       {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_MOSS_AUDIO_FFN_UP,          {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_MOSS_AUDIO_FFN_DOWN,        {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_MOSS_AUDIO_FFN_NORM,        {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_MOSS_AUDIO_ATTN_SCALE,      {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_MOSS_AUDIO_FFN_SCALE,       {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_MOSS_AUDIO_QUANT_INPUT_PROJ,{LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_MOSS_AUDIO_QUANT_OUTPUT_PROJ,{LLM_TENSOR_LAYER_OUTPUT,   GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_MOSS_AUDIO_QUANT_CODEBOOK,  {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
+    {LLM_TENSOR_MOSS_AUDIO_QUANT_IN_PROJ,   {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_MOSS_AUDIO_QUANT_OUT_PROJ,  {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
     // Nemotron 3 Super
     {LLM_TENSOR_FFN_LATENT_DOWN,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_FFN_LATENT_UP,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
@@ -2827,6 +2878,9 @@ std::string LLM_TN_IMPL::str() const {
     switch (tensor) {
         case LLM_TENSOR_TOKEN_EMBD_AUDIO:
         case LLM_TENSOR_OUTPUT_AUDIO:
+        case LLM_TENSOR_MOSS_AUDIO_QUANT_CODEBOOK:
+        case LLM_TENSOR_MOSS_AUDIO_QUANT_IN_PROJ:
+        case LLM_TENSOR_MOSS_AUDIO_QUANT_OUT_PROJ:
             name = ::format(LLM_TENSOR_NAMES.at(tensor), xid);
             break;
         default:

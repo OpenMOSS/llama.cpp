@@ -78,6 +78,8 @@ struct llama_context {
     float * get_embeddings();
     float * get_embeddings_ith(int32_t i);
     float * get_embeddings_seq(llama_seq_id seq_id);
+    int32_t * get_output_i32();
+    int32_t * get_output_i32_ith(int32_t i);
 
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
@@ -277,6 +279,8 @@ private:
     // embeddings output (2-dimensional array: [n_outputs][n_embd])
     // populated only when pooling_type == LLAMA_POOLING_TYPE_NONE
     buffer_view<float> embd = {nullptr, 0};
+    buffer_view<int32_t> out_i32 = {nullptr, 0};
+    uint32_t out_i32_stride = 0;
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active

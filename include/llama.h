@@ -556,6 +556,7 @@ extern "C" {
     LLAMA_API int32_t llama_model_n_embd     (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_inp (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_out (const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_out_i32  (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_layer    (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_head     (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_head_kv  (const struct llama_model * model);
@@ -1015,6 +1016,18 @@ extern "C" {
     // when pooling_type == LLAMA_POOLING_TYPE_RANK, returns float[n_cls_out] with the rank(s) of the sequence
     // otherwise: float[n_embd] (1-dimensional)
     LLAMA_API float * llama_get_embeddings_seq(struct llama_context * ctx, llama_seq_id seq_id);
+
+    // Get all raw int32 outputs.
+    // shape: [n_outputs*n_out_i32]
+    // Returns NULL if the current model/graph does not expose any raw int32 outputs.
+    LLAMA_API int32_t * llama_get_output_i32(struct llama_context * ctx);
+
+    // Get the raw int32 outputs for the ith token/output row.
+    // For positive indices, equivalent to:
+    // llama_get_output_i32(ctx) + ctx->output_ids[i]*n_out_i32
+    // Negative indices can be used to access outputs in reverse order, -1 is the last row.
+    // Returns NULL for invalid ids or when no raw int32 outputs are available.
+    LLAMA_API int32_t * llama_get_output_i32_ith(struct llama_context * ctx, int32_t i);
 
     //
     // backend sampling API [EXPERIMENTAL]

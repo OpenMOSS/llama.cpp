@@ -367,14 +367,48 @@ void llama_model::load_hparams(llama_model_loader & ml) {
         return;
     }
 
-    ml.get_key(LLM_KV_CONTEXT_LENGTH,          hparams.n_ctx_train);
-    ml.get_key(LLM_KV_EMBEDDING_LENGTH,        hparams.n_embd);
-    ml.get_key(LLM_KV_EMBEDDING_LENGTH_OUT,    hparams.n_embd_out_impl, false);
-    ml.get_key(LLM_KV_BLOCK_COUNT,             hparams.n_layer);
-    ml.get_key(LLM_KV_EXPERT_COUNT,            hparams.n_expert,        false);
-    ml.get_key(LLM_KV_EXPERT_USED_COUNT,       hparams.n_expert_used,   false);
-    ml.get_key(LLM_KV_EXPERT_GROUP_COUNT,      hparams.n_expert_groups, false);
-    ml.get_key(LLM_KV_EXPERT_GROUP_USED_COUNT, hparams.n_group_used,    false);
+    if (arch == LLM_ARCH_MOSS_TTS_AUDIO_ENCODER || arch == LLM_ARCH_MOSS_TTS_AUDIO_DECODER) {
+        const std::string arch_name = llm_arch_name(arch);
+        uint32_t downsample_rate = 0;
+        uint32_t sampling_rate = 0;
+        uint32_t block_count = 0;
+        uint32_t num_quantizers = 0;
+        uint32_t quantizer_input_dim = 0;
+        float context_duration = 0.0f;
+
+        ml.get_key(arch_name + ".downsample_rate", downsample_rate);
+        ml.get_key(arch_name + ".sampling_rate", sampling_rate);
+        ml.get_key(arch_name + ".causal_transformer_context_duration", context_duration);
+        ml.get_key(arch_name + ".quantizer.num_quantizers", num_quantizers);
+        ml.get_key(arch_name + ".quantizer.input_dim", quantizer_input_dim);
+
+        if (arch == LLM_ARCH_MOSS_TTS_AUDIO_ENCODER) {
+            ml.get_key(arch_name + ".encoder.block_count", block_count);
+            hparams.n_ctx_train = std::max<uint32_t>(1, (uint32_t) std::lround((double) sampling_rate * context_duration));
+            hparams.n_embd = 1;
+            hparams.n_embd_out_impl = quantizer_input_dim;
+            hparams.n_out_i32_impl = num_quantizers;
+        } else {
+            ml.get_key(arch_name + ".decoder.block_count", block_count);
+            hparams.n_ctx_train = std::max<uint32_t>(1, (uint32_t) std::lround((double) sampling_rate * context_duration / std::max<uint32_t>(downsample_rate, 1)));
+            hparams.n_embd = 1;
+            hparams.n_embd_out_impl = 1;
+            hparams.n_out_i32_impl = 0;
+        }
+
+        hparams.n_layer = block_count;
+        hparams.n_vq = num_quantizers;
+        hparams.sampling_rate = sampling_rate;
+    } else {
+        ml.get_key(LLM_KV_CONTEXT_LENGTH,          hparams.n_ctx_train);
+        ml.get_key(LLM_KV_EMBEDDING_LENGTH,        hparams.n_embd);
+        ml.get_key(LLM_KV_EMBEDDING_LENGTH_OUT,    hparams.n_embd_out_impl, false);
+        ml.get_key(LLM_KV_BLOCK_COUNT,             hparams.n_layer);
+        ml.get_key(LLM_KV_EXPERT_COUNT,            hparams.n_expert,        false);
+        ml.get_key(LLM_KV_EXPERT_USED_COUNT,       hparams.n_expert_used,   false);
+        ml.get_key(LLM_KV_EXPERT_GROUP_COUNT,      hparams.n_expert_groups, false);
+        ml.get_key(LLM_KV_EXPERT_GROUP_USED_COUNT, hparams.n_group_used,    false);
+    }
 
     if (arch == LLM_ARCH_WAVTOKENIZER_DEC) {
         ml.get_key(LLM_KV_FEATURES_LENGTH,  hparams.n_embd);
@@ -1027,6 +1061,14 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     case 64: type = LLM_TYPE_32B; break;
                     default: type = LLM_TYPE_UNKNOWN;
                 }
+            } break;
+        case LLM_ARCH_MOSS_TTS_AUDIO_ENCODER:
+        case LLM_ARCH_MOSS_TTS_AUDIO_DECODER:
+            {
+                hparams.pooling_type = LLAMA_POOLING_TYPE_NONE;
+                hparams.causal_attn = false;
+                hparams.f_norm_eps = 1e-5f;
+                type = LLM_TYPE_UNKNOWN;
             } break;
         case LLM_ARCH_MAINCODER:
             {
@@ -3727,6 +3769,88 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
                         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
                         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
+                    }
+                } break;
+            case LLM_ARCH_MOSS_TTS_AUDIO_ENCODER:
+            case LLM_ARCH_MOSS_TTS_AUDIO_DECODER:
+                {
+                    const std::string arch_name = llm_arch_name(arch);
+                    const char * section_name = arch == LLM_ARCH_MOSS_TTS_AUDIO_ENCODER ? "encoder" : "decoder";
+
+                    auto get_u32 = [&](const std::string & key) -> int64_t {
+                        uint32_t value = 0;
+                        ml.get_key(key, value);
+                        return value;
+                    };
+
+                    auto get_str = [&](const std::string & key) -> std::string {
+                        std::string value;
+                        ml.get_key(key, value);
+                        return value;
+                    };
+
+                    const int64_t quant_input_dim = get_u32(arch_name + ".quantizer.input_dim");
+                    const int64_t quant_rvq_dim = get_u32(arch_name + ".quantizer.rvq_dim");
+                    const int64_t quant_output_dim = get_u32(arch_name + ".quantizer.output_dim");
+                    const int64_t quant_codebook_size = get_u32(arch_name + ".quantizer.codebook_size");
+                    const int64_t quant_codebook_dim = get_u32(arch_name + ".quantizer.codebook_dim");
+                    const int64_t num_quantizers = get_u32(arch_name + ".quantizer.num_quantizers");
+                    const int64_t block_count = get_u32(arch_name + "." + section_name + ".block_count");
+
+                    create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_QUANT_INPUT_PROJ, "weight"), {1, quant_input_dim, quant_rvq_dim},
+                            arch == LLM_ARCH_MOSS_TTS_AUDIO_ENCODER ? 0 : TENSOR_NOT_REQUIRED);
+                    create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_QUANT_INPUT_PROJ, "bias"), {quant_rvq_dim},
+                            arch == LLM_ARCH_MOSS_TTS_AUDIO_ENCODER ? 0 : TENSOR_NOT_REQUIRED);
+                    create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_QUANT_OUTPUT_PROJ, "weight"), {1, quant_rvq_dim, quant_output_dim},
+                            arch == LLM_ARCH_MOSS_TTS_AUDIO_DECODER ? 0 : TENSOR_NOT_REQUIRED);
+                    create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_QUANT_OUTPUT_PROJ, "bias"), {quant_output_dim},
+                            arch == LLM_ARCH_MOSS_TTS_AUDIO_DECODER ? 0 : TENSOR_NOT_REQUIRED);
+
+                    for (int64_t iq = 0; iq < num_quantizers; ++iq) {
+                        create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_QUANT_CODEBOOK, "weight", -1, (int) iq), {quant_codebook_dim, quant_codebook_size}, 0);
+                        create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_QUANT_IN_PROJ, "weight", -1, (int) iq), {1, quant_rvq_dim, quant_codebook_dim},
+                                arch == LLM_ARCH_MOSS_TTS_AUDIO_ENCODER ? 0 : TENSOR_NOT_REQUIRED);
+                        create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_QUANT_IN_PROJ, "bias", -1, (int) iq), {quant_codebook_dim},
+                                arch == LLM_ARCH_MOSS_TTS_AUDIO_ENCODER ? 0 : TENSOR_NOT_REQUIRED);
+                        create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_QUANT_OUT_PROJ, "weight", -1, (int) iq), {1, quant_codebook_dim, quant_rvq_dim}, 0);
+                        create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_QUANT_OUT_PROJ, "bias", -1, (int) iq), {quant_rvq_dim}, 0);
+                    }
+
+                    int tensor_block = 0;
+                    for (int64_t ib = 0; ib < block_count; ++ib) {
+                        const std::string block_prefix = arch_name + "." + section_name + "." + std::to_string(ib);
+                        const std::string module_type = get_str(block_prefix + ".module_type");
+
+                        if (module_type == "PatchedPretransform") {
+                            continue;
+                        }
+                        if (module_type != "Transformer") {
+                            throw std::runtime_error("unsupported MOSS audio module type: " + module_type);
+                        }
+
+                        const int64_t input_dimension = get_u32(block_prefix + ".input_dimension");
+                        const int64_t output_dimension = get_u32(block_prefix + ".output_dimension");
+                        const int64_t d_model = get_u32(block_prefix + ".d_model");
+                        const int64_t dim_feedforward = get_u32(block_prefix + ".dim_feedforward");
+                        const int64_t num_layers = get_u32(block_prefix + ".num_layers");
+
+                        create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_BLOCK_INPUT_PROJ, "weight", tensor_block), {input_dimension, d_model}, TENSOR_NOT_REQUIRED);
+                        create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_BLOCK_OUTPUT_PROJ, "weight", tensor_block), {d_model, output_dimension}, TENSOR_NOT_REQUIRED);
+
+                        for (int64_t il = 0; il < num_layers; ++il) {
+                            create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_ATTN_QKV,  "weight", tensor_block, (int) il), {d_model, d_model * 3}, 0);
+                            create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_ATTN_OUT,  "weight", tensor_block, (int) il), {d_model, d_model}, 0);
+                            create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_FFN_UP,    "weight", tensor_block, (int) il), {d_model, dim_feedforward}, 0);
+                            create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_FFN_DOWN,  "weight", tensor_block, (int) il), {dim_feedforward, d_model}, 0);
+                            create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_ATTN_NORM, "weight", tensor_block, (int) il), {d_model}, 0);
+                            create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_ATTN_NORM, "bias",   tensor_block, (int) il), {d_model}, 0);
+                            create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_FFN_NORM,  "weight", tensor_block, (int) il), {d_model}, 0);
+                            create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_FFN_NORM,  "bias",   tensor_block, (int) il), {d_model}, 0);
+                            create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_ATTN_SCALE, "scale", tensor_block, (int) il), {d_model}, TENSOR_NOT_REQUIRED);
+                            create_tensor(tn(LLM_TENSOR_MOSS_AUDIO_FFN_SCALE,  "scale", tensor_block, (int) il), {d_model}, TENSOR_NOT_REQUIRED);
+                        }
+
+                        tensor_block++;
                     }
                 } break;
             case LLM_ARCH_QWEN3MOE:
@@ -8110,6 +8234,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
         case LLM_ARCH_NEO_BERT:
         case LLM_ARCH_EUROBERT:
         case LLM_ARCH_WAVTOKENIZER_DEC:
+        case LLM_ARCH_MOSS_TTS_AUDIO_ENCODER:
+        case LLM_ARCH_MOSS_TTS_AUDIO_DECODER:
         case LLM_ARCH_MODERN_BERT:
         case LLM_ARCH_GEMMA_EMBEDDING:
         case LLM_ARCH_DREAM:
@@ -8365,6 +8491,14 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
         case LLM_ARCH_MOSS_TTS_DELAY:
             {
                 llm = std::make_unique<llm_build_moss_tts_delay>(*this, params);
+            } break;
+        case LLM_ARCH_MOSS_TTS_AUDIO_ENCODER:
+            {
+                llm = std::make_unique<llm_build_moss_tts_audio_encoder>(*this, params);
+            } break;
+        case LLM_ARCH_MOSS_TTS_AUDIO_DECODER:
+            {
+                llm = std::make_unique<llm_build_moss_tts_audio_decoder>(*this, params);
             } break;
         case LLM_ARCH_QWEN3MOE:
             {
@@ -8822,6 +8956,10 @@ int32_t llama_model_n_embd_out(const llama_model * model) {
     return model->hparams.n_embd_out();
 }
 
+int32_t llama_model_n_out_i32(const llama_model * model) {
+    return model->hparams.n_out_i32();
+}
+
 int32_t llama_model_n_layer(const llama_model * model) {
     return model->hparams.n_layer;
 }
@@ -8891,6 +9029,8 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_RWKV7:
         case LLM_ARCH_ARWKV7:
         case LLM_ARCH_WAVTOKENIZER_DEC:
+        case LLM_ARCH_MOSS_TTS_AUDIO_ENCODER:
+        case LLM_ARCH_MOSS_TTS_AUDIO_DECODER:
         case LLM_ARCH_NEMOTRON_H:
         case LLM_ARCH_NEMOTRON_H_MOE:
         case LLM_ARCH_KIMI_LINEAR:
@@ -9112,16 +9252,22 @@ uint64_t llama_model_n_params(const llama_model * model) {
 
 bool llama_model_has_encoder(const llama_model * model) {
     switch (model->arch) {
-        case LLM_ARCH_T5:        return true;
-        case LLM_ARCH_T5ENCODER: return true;
-        default:                 return false;
+        case LLM_ARCH_T5:
+        case LLM_ARCH_T5ENCODER:
+        case LLM_ARCH_MOSS_TTS_AUDIO_ENCODER:
+            return true;
+        default:
+            return false;
     }
 }
 
 bool llama_model_has_decoder(const llama_model * model) {
     switch (model->arch) {
-        case LLM_ARCH_T5ENCODER: return false;
-        default:                 return true;
+        case LLM_ARCH_T5ENCODER:
+        case LLM_ARCH_MOSS_TTS_AUDIO_ENCODER:
+            return false;
+        default:
+            return true;
     }
 }
 

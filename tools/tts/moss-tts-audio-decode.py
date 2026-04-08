@@ -3,32 +3,14 @@
 from __future__ import annotations
 
 import argparse
-import os
 import struct
-import sys
 import wave
 from pathlib import Path
 
 import numpy as np
 
-
-def resolve_moss_tts_dir() -> Path:
-    env_dir = os.getenv("MOSS_TTS_DIR") or os.getenv("MOSS_TTS_ROOT")
-    if env_dir:
-        path = Path(env_dir).expanduser().resolve()
-    else:
-        path = Path(__file__).resolve().parents[3] / "MOSS-TTS"
-
-    if not path.is_dir():
-        raise FileNotFoundError(
-            f"MOSS-TTS repo not found: {path}. Set MOSS_TTS_DIR to the MOSS-TTS checkout root."
-        )
-    return path
-
-
-sys.path.insert(0, str(resolve_moss_tts_dir()))
-
-from moss_tts_delay.llama_cpp._constants import N_VQ, SAMPLE_RATE  # noqa: E402
+from moss_tts_onnx import OnnxAudioTokenizer
+from moss_tts_processor import N_VQ, SAMPLE_RATE
 
 
 CODES_MAGIC = 0x53444F43  # "CODS"
@@ -72,13 +54,6 @@ def main() -> int:
     ap.add_argument("--decoder-onnx", required=True)
     ap.add_argument("--cpu", action="store_true")
     args = ap.parse_args()
-
-    try:
-        from moss_audio_tokenizer.onnx import OnnxAudioTokenizer
-    except Exception as exc:
-        raise RuntimeError(
-            "moss_audio_tokenizer.onnx is unavailable; initialize the submodule/package and install ONNX deps"
-        ) from exc
 
     codes = read_codes(Path(args.codes_bin))
     if codes.ndim != 2 or codes.shape[1] != N_VQ:

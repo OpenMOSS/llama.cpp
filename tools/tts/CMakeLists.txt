@@ -8,7 +8,7 @@ if(LLAMA_TOOLS_INSTALL)
 endif()
 
 set(TARGET llama-moss-tts)
-add_executable(${TARGET} moss-tts.cpp)
+add_executable(${TARGET} run-moss-tts-delay.cpp)
 target_link_libraries(${TARGET} PRIVATE llama common ${CMAKE_THREAD_LIBS_INIT})
 target_compile_features(${TARGET} PRIVATE cxx_std_17)
 

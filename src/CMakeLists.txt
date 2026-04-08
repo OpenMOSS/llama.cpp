@@ -100,6 +100,9 @@ add_library(llama
             models/minicpm3.cpp
             models/minimax-m2.cpp
             models/mistral3.cpp
+            models/moss-audio-common.cpp
+            models/moss-audio-decoder.cpp
+            models/moss-audio-encoder.cpp
             models/moss-tts-delay.cpp
             models/modern-bert.cpp
             models/mpt.cpp

@@ -1723,7 +1723,13 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
 
     // determine vocab type
     {
-        ml.get_key(LLM_KV_TOKENIZER_MODEL, tokenizer_model);
+        if (!ml.get_key(LLM_KV_TOKENIZER_MODEL, tokenizer_model, false)) {
+            if (kv.arch == LLM_ARCH_MOSS_TTS_AUDIO_ENCODER || kv.arch == LLM_ARCH_MOSS_TTS_AUDIO_DECODER) {
+                tokenizer_model = "none";
+            } else {
+                ml.get_key(LLM_KV_TOKENIZER_MODEL, tokenizer_model);
+            }
+        }
         ml.get_key(LLM_KV_TOKENIZER_PRE,   tokenizer_pre, false);
 
         ml.get_key(LLM_KV_TOKENIZER_TOKEN_TYPE_COUNT, n_token_types, false);
@@ -1745,6 +1751,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             if (ml.get_key(LLM_KV_VOCAB_SIZE, n_tokens, false)) {
                 LLAMA_LOG_WARN("%s: adding %u dummy tokens\n", __func__, n_tokens);
                 id_to_token.resize(n_tokens);
+            } else if (kv.arch == LLM_ARCH_MOSS_TTS_AUDIO_DECODER) {
+                LLAMA_LOG_WARN("%s: missing vocab size for %s, adding a single dummy token for auxiliary audio batches\n",
+                        __func__, llm_arch_name(kv.arch));
+                id_to_token.resize(1);
             }
 
             return;
