@@ -3,7 +3,6 @@
 #include "log.h"
 #include "llama.h"
 #include "llama-cpp.h"
-#include "llama-moss-audio-tokenizer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -237,12 +236,6 @@ static void moss_decode_audio_llama(
         const moss_delay_config & cfg,
         int32_t n_gpu_layers,
         const std::string & wav_out_path);
-static void moss_decode_audio_native(
-        const std::string & model_path,
-        const std::vector<llama_token> & raw_codes,
-        size_t raw_frames,
-        const moss_delay_config & cfg,
-        const std::string & wav_out_path);
 static std::vector<float> moss_read_wav_f32_mono(const std::string & path, int expected_sample_rate);
 static moss_prompt_input moss_build_prompt_input(
         const llama_vocab * vocab,
@@ -458,6 +451,37 @@ static std::string moss_model_architecture(const llama_model * model) {
         throw std::runtime_error("missing general.architecture in GGUF metadata");
     }
     return std::string(buf);
+}
+
+static uint32_t moss_audio_model_meta_u32(
+        const llama_model * model,
+        const char * expected_arch,
+        const char * suffix) {
+    const std::string arch = moss_model_architecture(model);
+    if (arch != expected_arch) {
+        throw std::runtime_error(
+                "unexpected audio model architecture: expected " +
+                std::string(expected_arch) + ", got " + arch);
+    }
+
+    uint32_t value = 0;
+    const std::string key = arch + "." + suffix;
+    if (!parse_meta_u32(model, key.c_str(), value)) {
+        throw std::runtime_error("missing audio model metadata key: " + key);
+    }
+    return value;
+}
+
+static uint32_t moss_audio_model_sampling_rate(const llama_model * model, const char * expected_arch) {
+    return moss_audio_model_meta_u32(model, expected_arch, "sampling_rate");
+}
+
+static uint32_t moss_audio_model_downsample_rate(const llama_model * model, const char * expected_arch) {
+    return moss_audio_model_meta_u32(model, expected_arch, "downsample_rate");
+}
+
+static uint32_t moss_audio_model_num_quantizers(const llama_model * model, const char * expected_arch) {
+    return moss_audio_model_meta_u32(model, expected_arch, "quantizer.num_quantizers");
 }
 
 struct moss_audio_runtime {
@@ -1198,9 +1222,9 @@ static std::vector<llama_token> moss_encode_audio_llama(
             audio_encoder_model_path,
             "moss-tts-audio-encoder",
             n_gpu_layers);
-    const int sample_rate = moss_audio_model_sample_rate(runtime.model.get());
-    const uint32_t downsample_rate = moss_audio_model_downsample_rate(runtime.model.get());
-    const uint32_t model_quantizers = moss_audio_model_num_quantizers(runtime.model.get());
+    const int sample_rate = (int) moss_audio_model_sampling_rate(runtime.model.get(), "moss-tts-audio-encoder");
+    const uint32_t downsample_rate = moss_audio_model_downsample_rate(runtime.model.get(), "moss-tts-audio-encoder");
+    const uint32_t model_quantizers = moss_audio_model_num_quantizers(runtime.model.get(), "moss-tts-audio-encoder");
     const uint32_t nq = n_quantizers == 0 ? model_quantizers : n_quantizers;
     if (nq == 0 || nq > model_quantizers) {
         throw std::runtime_error("invalid audio encoder quantizer count");
@@ -1276,9 +1300,9 @@ static void moss_decode_audio_llama(
             n_gpu_layers,
             std::max<uint32_t>((uint32_t) raw_frames, 1u));
 
-    const int sample_rate = moss_audio_model_sample_rate(runtime.model.get());
-    const uint32_t downsample_rate = moss_audio_model_downsample_rate(runtime.model.get());
-    const uint32_t model_quantizers = moss_audio_model_num_quantizers(runtime.model.get());
+    const int sample_rate = (int) moss_audio_model_sampling_rate(runtime.model.get(), "moss-tts-audio-decoder");
+    const uint32_t downsample_rate = moss_audio_model_downsample_rate(runtime.model.get(), "moss-tts-audio-decoder");
+    const uint32_t model_quantizers = moss_audio_model_num_quantizers(runtime.model.get(), "moss-tts-audio-decoder");
     if (cfg.n_vq != model_quantizers) {
         throw std::runtime_error(
                 "audio decoder quantizer count mismatch: model expects " +
@@ -1310,23 +1334,6 @@ static void moss_decode_audio_llama(
     }
 
     if (!save_wav16(wav_out_path, audio, sample_rate)) {
-        throw std::runtime_error("failed to write WAV file: " + wav_out_path);
-    }
-}
-
-static void moss_decode_audio_native(
-        const std::string & model_path,
-        const std::vector<llama_token> & raw_codes,
-        size_t raw_frames,
-        const moss_delay_config & cfg,
-        const std::string & wav_out_path) {
-    moss_audio_tokenizer_options codec_opts;
-    codec_opts.n_threads = cpu_get_num_math();
-
-    moss_audio_tokenizer codec(model_path, codec_opts);
-    const std::vector<float> audio = codec.decode(raw_codes, raw_frames, cfg.n_vq);
-
-    if (!save_wav16(wav_out_path, audio, codec.sample_rate())) {
         throw std::runtime_error("failed to write WAV file: " + wav_out_path);
     }
 }
@@ -1614,7 +1621,6 @@ static int moss_run_audio_decoder_helper(
 }
 
 static bool moss_decode_parity(
-        const std::string & model_path,
         const std::string & ref_path,
         const std::string & dump_codes_path,
         const std::string & audio_decoder_model_path,
@@ -1694,10 +1700,7 @@ static bool moss_decode_parity(
                     n_gpu_layers,
                     wav_out);
         } else {
-            if (model_path.empty()) {
-                throw std::runtime_error("--wav-out requires either --audio-decoder-model, --audio-decoder-script, or -m <model.gguf> with bundled codec");
-            }
-            moss_decode_audio_native(model_path, decoded.raw_codes, decoded.raw_frames, cfg, wav_out);
+            throw std::runtime_error("--wav-out requires either --audio-decoder-model or --audio-decoder-script");
         }
     } else if (!helper_script.empty()) {
         if (dump_codes_path.empty()) {
@@ -1952,7 +1955,7 @@ static void moss_generate_from_prompt(
                     n_gpu_layers,
                     wav_out);
         } else {
-            moss_decode_audio_native(model_path, decoded.raw_codes, decoded.raw_frames, cfg, wav_out);
+            throw std::runtime_error("--wav-out requires either --audio-decoder-model or --audio-decoder-script");
         }
     } else if (!helper_script.empty()) {
         if (dump_raw_codes_path.empty()) {
@@ -2020,11 +2023,7 @@ static void moss_generate_from_text(
                         cfg.n_vq,
                         &reference_frames);
             } else {
-                moss_audio_tokenizer_options codec_opts;
-                codec_opts.n_threads = cpu_get_num_math();
-                moss_audio_tokenizer codec(model_path, codec_opts);
-                const std::vector<float> wav = moss_read_wav_f32_mono(reference_audio_path, codec.sample_rate());
-                reference_codes = codec.encode(wav, &reference_frames, cfg.n_vq);
+                throw std::runtime_error("--reference-audio requires --audio-encoder-model");
             }
         }
 
@@ -2587,7 +2586,6 @@ int main(int argc, char ** argv) {
     if (!decode_parity_ref_path.empty()) {
         try {
             const bool ok = moss_decode_parity(
-                    model_path,
                     decode_parity_ref_path,
                     dump_raw_codes_path,
                     audio_decoder_model_path,
@@ -2609,7 +2607,7 @@ int main(int argc, char ** argv) {
         if (self_test) {
             return EXIT_SUCCESS;
         }
-        LOG("moss delay state, multi-head sampler, raw-code decode, and native audio encode/decode helpers are available.\n");
+        LOG("moss delay state, multi-head sampler, raw-code decode, and native three-GGUF audio encode/decode are available.\n");
         LOG("use --print-delay-config with -m <model.gguf> to inspect model metadata.\n");
         LOG("use --decode-parity-ref <ref.bin> to verify C++ de-delay/raw-code extraction against Python.\n");
         LOG("use --text <text> -m <model.gguf> --audio-decoder-model <audio-decoder.gguf> --wav-out out.wav for native generation.\n");

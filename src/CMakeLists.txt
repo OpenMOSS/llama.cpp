@@ -7,7 +7,6 @@ llama_add_compile_flags()
 # llama
 
 add_library(llama
-            ../include/llama-moss-audio-tokenizer.h
             ../include/llama.h
             llama.cpp
             llama-adapter.cpp
@@ -104,7 +103,6 @@ add_library(llama
             models/moss-audio-common.cpp
             models/moss-audio-decoder.cpp
             models/moss-audio-encoder.cpp
-            models/moss-audio-tokenizer.cpp
             models/moss-tts-delay.cpp
             models/modern-bert.cpp
             models/mpt.cpp
