@@ -173,8 +173,7 @@ llm_build_moss_tts_delay::llm_build_moss_tts_delay(const llama_model & model, co
         logits = build_lora_mm(model.output, cur);
         cb(logits, "result_output_text", -1);
 
-        // 2. Bridge backbone(2048) → local space via SwiGLU MLP
-        //    local_cur = down(silu(gate(cur)) * up(cur))
+        // 2. Bridge backbone(2048) → local space(1536) via SwiGLU MLP
         ggml_tensor * gate_out = build_lora_mm(model.speech_to_local_gate, cur);
         gate_out = ggml_silu(ctx0, gate_out);
         ggml_tensor * up_out = build_lora_mm(model.speech_to_local_up, cur);
@@ -182,7 +181,48 @@ llm_build_moss_tts_delay::llm_build_moss_tts_delay(const llama_model & model, co
         local_cur = build_lora_mm(model.speech_to_local_down, local_cur);
         cb(local_cur, "speech_to_local_out", -1);
 
-        // 3. For each audio channel: local_to_speech bridge → audio_ln → head → logits
+        // 3. Run local transformer (4 layers) on the local representation
+        //    Note: in the full autoregressive version, this runs per-channel
+        //    with accumulating inputs. Here we process the single backbone output
+        //    through all 4 layers as a static pass. This uses the trained weights
+        //    but lacks the sequential channel feedback (TODO: autoregressive loop
+        //    in moss-tts.cpp for proper inter-channel coherence).
+        if (!model.local_layers.empty() && model.local_layers[0].attn_norm != nullptr) {
+            const int n_local_layers = (int) model.local_layers.size();
+
+            for (int ll = 0; ll < n_local_layers; ++ll) {
+                const auto & layer = model.local_layers[ll];
+
+                // FFN-only pass for the static single-token case.
+                // Full attention with GQA and KV cache accumulation is needed
+                // for the autoregressive channel loop (TODO in moss-tts.cpp).
+                // The FFN layers do the bulk of the learned transformation.
+
+                ggml_tensor * local_ffn_inp = local_cur;
+                local_cur = build_norm(local_cur, layer.ffn_norm, nullptr, LLM_NORM_RMS, -1);
+                cb(local_cur, "local_ffn_norm", ll);
+
+                // SwiGLU FFN
+                ggml_tensor * ffn_gate = build_lora_mm(layer.ffn_gate, local_cur);
+                ffn_gate = ggml_silu(ctx0, ffn_gate);
+                ggml_tensor * ffn_up = build_lora_mm(layer.ffn_up, local_cur);
+                local_cur = ggml_mul(ctx0, ffn_gate, ffn_up);
+                local_cur = build_lora_mm(layer.ffn_down, local_cur);
+                cb(local_cur, "local_ffn_out", ll);
+
+                // Residual
+                local_cur = ggml_add(ctx0, local_cur, local_ffn_inp);
+                cb(local_cur, "local_l_out", ll);
+            }
+
+            // Local output norm
+            if (model.local_output_norm != nullptr) {
+                local_cur = build_norm(local_cur, model.local_output_norm, nullptr, LLM_NORM_RMS, -1);
+                cb(local_cur, "local_output_norm", -1);
+            }
+        }
+
+        // 4. For each audio channel: local_to_speech bridge → audio_ln → head → logits
         for (uint32_t i = 0; i < hparams.n_vq; ++i) {
             // Bridge local(1536) → backbone(2048) via SwiGLU MLP
             ggml_tensor * ch_gate = build_lora_mm(model.local_to_speech_gate[i], local_cur);
