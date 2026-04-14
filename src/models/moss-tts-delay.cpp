@@ -162,15 +162,101 @@ llm_build_moss_tts_delay::llm_build_moss_tts_delay(const llama_model & model, co
 
     GGML_ASSERT(hparams.n_vq == model.output_audio.size());
 
-    ggml_tensor * logits = build_lora_mm(model.output, cur);
-    cb(logits, "result_output_text", -1);
+    // Detect Local variant: speech_to_local bridge MLP present
+    const bool is_local = (model.speech_to_local_gate != nullptr);
 
-    for (uint32_t i = 0; i < hparams.n_vq; ++i) {
-        ggml_tensor * audio_logits = build_lora_mm(model.output_audio[i], cur);
-        cb(audio_logits, "result_output_audio", i);
+    ggml_tensor * logits;
 
-        logits = ggml_concat(ctx0, logits, audio_logits, 0);
-        cb(logits, "result_output_concat", i);
+    if (is_local) {
+        // ── Local variant output path ──
+        // 1. Text head: backbone output → text logits (same as 8B)
+        logits = build_lora_mm(model.output, cur);
+        cb(logits, "result_output_text", -1);
+
+        // 2. Bridge backbone(2048) → local space(1536) via SwiGLU MLP
+        ggml_tensor * gate_out = build_lora_mm(model.speech_to_local_gate, cur);
+        gate_out = ggml_silu(ctx0, gate_out);
+        ggml_tensor * up_out = build_lora_mm(model.speech_to_local_up, cur);
+        ggml_tensor * local_cur = ggml_mul(ctx0, gate_out, up_out);
+        local_cur = build_lora_mm(model.speech_to_local_down, local_cur);
+        cb(local_cur, "speech_to_local_out", -1);
+
+        // 3. Run local transformer (4 layers) on the local representation
+        //    Note: in the full autoregressive version, this runs per-channel
+        //    with accumulating inputs. Here we process the single backbone output
+        //    through all 4 layers as a static pass. This uses the trained weights
+        //    but lacks the sequential channel feedback (TODO: autoregressive loop
+        //    in moss-tts.cpp for proper inter-channel coherence).
+        if (!model.local_layers.empty() && model.local_layers[0].attn_norm != nullptr) {
+            const int n_local_layers = (int) model.local_layers.size();
+
+            for (int ll = 0; ll < n_local_layers; ++ll) {
+                const auto & layer = model.local_layers[ll];
+
+                // FFN-only pass for the static single-token case.
+                // Full attention with GQA and KV cache accumulation is needed
+                // for the autoregressive channel loop (TODO in moss-tts.cpp).
+                // The FFN layers do the bulk of the learned transformation.
+
+                ggml_tensor * local_ffn_inp = local_cur;
+                local_cur = build_norm(local_cur, layer.ffn_norm, nullptr, LLM_NORM_RMS, -1);
+                cb(local_cur, "local_ffn_norm", ll);
+
+                // SwiGLU FFN
+                ggml_tensor * ffn_gate = build_lora_mm(layer.ffn_gate, local_cur);
+                ffn_gate = ggml_silu(ctx0, ffn_gate);
+                ggml_tensor * ffn_up = build_lora_mm(layer.ffn_up, local_cur);
+                local_cur = ggml_mul(ctx0, ffn_gate, ffn_up);
+                local_cur = build_lora_mm(layer.ffn_down, local_cur);
+                cb(local_cur, "local_ffn_out", ll);
+
+                // Residual
+                local_cur = ggml_add(ctx0, local_cur, local_ffn_inp);
+                cb(local_cur, "local_l_out", ll);
+            }
+
+            // Local output norm
+            if (model.local_output_norm != nullptr) {
+                local_cur = build_norm(local_cur, model.local_output_norm, nullptr, LLM_NORM_RMS, -1);
+                cb(local_cur, "local_output_norm", -1);
+            }
+        }
+
+        // 4. For each audio channel: local_to_speech bridge → audio_ln → head → logits
+        for (uint32_t i = 0; i < hparams.n_vq; ++i) {
+            // Bridge local(1536) → backbone(2048) via SwiGLU MLP
+            ggml_tensor * ch_gate = build_lora_mm(model.local_to_speech_gate[i], local_cur);
+            ch_gate = ggml_silu(ctx0, ch_gate);
+            ggml_tensor * ch_up = build_lora_mm(model.local_to_speech_up[i], local_cur);
+            ggml_tensor * ch_cur = ggml_mul(ctx0, ch_gate, ch_up);
+            ch_cur = build_lora_mm(model.local_to_speech_down[i], ch_cur);
+            cb(ch_cur, "local_to_speech_out", i);
+
+            // Audio layer norm
+            if (model.audio_ln[i] != nullptr) {
+                ch_cur = build_norm(ch_cur, model.audio_ln[i], nullptr, LLM_NORM_RMS, -1);
+                cb(ch_cur, "audio_ln", i);
+            }
+
+            // Audio head → logits
+            ggml_tensor * audio_logits = build_lora_mm(model.output_audio[i], ch_cur);
+            cb(audio_logits, "result_output_audio", i);
+
+            logits = ggml_concat(ctx0, logits, audio_logits, 0);
+            cb(logits, "result_output_concat", i);
+        }
+    } else {
+        // ── 8B Delay variant output path (original) ──
+        logits = build_lora_mm(model.output, cur);
+        cb(logits, "result_output_text", -1);
+
+        for (uint32_t i = 0; i < hparams.n_vq; ++i) {
+            ggml_tensor * audio_logits = build_lora_mm(model.output_audio[i], cur);
+            cb(audio_logits, "result_output_audio", i);
+
+            logits = ggml_concat(ctx0, logits, audio_logits, 0);
+            cb(logits, "result_output_concat", i);
+        }
     }
 
     logits = ggml_cont(ctx0, logits);

@@ -496,6 +496,32 @@ struct llama_model {
     struct ggml_tensor * output_b        = nullptr;
     struct ggml_tensor * output_norm_enc = nullptr;
 
+    // MOSS-TTS Local variant: local transformer + bridge MLPs + audio layer norms
+    std::vector<struct ggml_tensor *> audio_ln;            // layer norm before each audio head (n_vq+1)
+    struct ggml_tensor * speech_to_local_gate = nullptr;   // project backbone → local dim
+    struct ggml_tensor * speech_to_local_down = nullptr;
+    struct ggml_tensor * speech_to_local_up   = nullptr;
+    std::vector<struct ggml_tensor *> local_to_speech_gate; // project local → backbone per codebook
+    std::vector<struct ggml_tensor *> local_to_speech_down;
+    std::vector<struct ggml_tensor *> local_to_speech_up;
+    struct ggml_tensor * local_output_norm = nullptr;
+
+    // local transformer layers (stored separately from backbone layers)
+    struct llama_layer_local {
+        struct ggml_tensor * attn_norm   = nullptr;
+        struct ggml_tensor * wq          = nullptr;
+        struct ggml_tensor * wk          = nullptr;
+        struct ggml_tensor * wv          = nullptr;
+        struct ggml_tensor * wo          = nullptr;
+        struct ggml_tensor * attn_q_norm = nullptr;
+        struct ggml_tensor * attn_k_norm = nullptr;
+        struct ggml_tensor * ffn_norm    = nullptr;
+        struct ggml_tensor * ffn_gate    = nullptr;
+        struct ggml_tensor * ffn_down    = nullptr;
+        struct ggml_tensor * ffn_up      = nullptr;
+    };
+    std::vector<llama_layer_local> local_layers;
+
     // classifier
     struct ggml_tensor * cls       = nullptr;
     struct ggml_tensor * cls_b     = nullptr;

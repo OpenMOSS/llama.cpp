@@ -517,6 +517,25 @@ class MODEL_TENSOR(IntEnum):
     POS_EMBD             = auto()
     OUTPUT               = auto()
     OUTPUT_AUDIO         = auto() # moss-tts-delay, indexed as output_audio.{id}
+    AUDIO_LN             = auto()
+    LOCAL_ATTN_NORM      = auto()
+    LOCAL_ATTN_Q         = auto()
+    LOCAL_ATTN_Q_NORM    = auto()
+    LOCAL_ATTN_K         = auto()
+    LOCAL_ATTN_K_NORM    = auto()
+    LOCAL_ATTN_V         = auto()
+    LOCAL_ATTN_OUT       = auto()
+    LOCAL_FFN_NORM       = auto()
+    LOCAL_FFN_GATE       = auto()
+    LOCAL_FFN_DOWN       = auto()
+    LOCAL_FFN_UP         = auto()
+    LOCAL_OUTPUT_NORM    = auto()
+    LOCAL_TO_SPEECH_GATE = auto()
+    LOCAL_TO_SPEECH_DOWN = auto()
+    LOCAL_TO_SPEECH_UP   = auto()
+    SPEECH_TO_LOCAL_GATE = auto()
+    SPEECH_TO_LOCAL_DOWN = auto()
+    SPEECH_TO_LOCAL_UP   = auto()
     DENSE_2_OUT          = auto() # embeddinggemma 2_Dense
     DENSE_3_OUT          = auto() # embeddinggemma 3_Dense
     OUTPUT_NORM          = auto()
@@ -964,6 +983,25 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.OUTPUT_NORM:               "output_norm",
     MODEL_TENSOR.OUTPUT:                    "output",
     MODEL_TENSOR.OUTPUT_AUDIO:              "output_audio",
+    MODEL_TENSOR.AUDIO_LN:                  "audio_ln",
+    MODEL_TENSOR.LOCAL_ATTN_NORM:           "local.blk.{bid}.attn_norm",
+    MODEL_TENSOR.LOCAL_ATTN_Q:              "local.blk.{bid}.attn_q",
+    MODEL_TENSOR.LOCAL_ATTN_Q_NORM:         "local.blk.{bid}.attn_q_norm",
+    MODEL_TENSOR.LOCAL_ATTN_K:              "local.blk.{bid}.attn_k",
+    MODEL_TENSOR.LOCAL_ATTN_K_NORM:         "local.blk.{bid}.attn_k_norm",
+    MODEL_TENSOR.LOCAL_ATTN_V:              "local.blk.{bid}.attn_v",
+    MODEL_TENSOR.LOCAL_ATTN_OUT:            "local.blk.{bid}.attn_output",
+    MODEL_TENSOR.LOCAL_FFN_NORM:            "local.blk.{bid}.ffn_norm",
+    MODEL_TENSOR.LOCAL_FFN_GATE:            "local.blk.{bid}.ffn_gate",
+    MODEL_TENSOR.LOCAL_FFN_DOWN:            "local.blk.{bid}.ffn_down",
+    MODEL_TENSOR.LOCAL_FFN_UP:              "local.blk.{bid}.ffn_up",
+    MODEL_TENSOR.LOCAL_OUTPUT_NORM:         "local.output_norm",
+    MODEL_TENSOR.LOCAL_TO_SPEECH_GATE:      "local_to_speech.ffn_gate",
+    MODEL_TENSOR.LOCAL_TO_SPEECH_DOWN:      "local_to_speech.ffn_down",
+    MODEL_TENSOR.LOCAL_TO_SPEECH_UP:        "local_to_speech.ffn_up",
+    MODEL_TENSOR.SPEECH_TO_LOCAL_GATE:      "speech_to_local.ffn_gate",
+    MODEL_TENSOR.SPEECH_TO_LOCAL_DOWN:      "speech_to_local.ffn_down",
+    MODEL_TENSOR.SPEECH_TO_LOCAL_UP:        "speech_to_local.ffn_up",
     MODEL_TENSOR.DENSE_2_OUT:                "dense_2", # embeddinggemma 2_Dense
     MODEL_TENSOR.DENSE_3_OUT:                "dense_3", # embeddinggemma 2_Dense
     MODEL_TENSOR.ROPE_FREQS:                "rope_freqs",
@@ -1812,6 +1850,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.OUTPUT_NORM,
         MODEL_TENSOR.OUTPUT,
         MODEL_TENSOR.OUTPUT_AUDIO,
+        MODEL_TENSOR.AUDIO_LN,
         MODEL_TENSOR.ROPE_FREQS,
         MODEL_TENSOR.ATTN_NORM,
         MODEL_TENSOR.ATTN_Q,
@@ -1824,6 +1863,24 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_GATE,
         MODEL_TENSOR.FFN_DOWN,
         MODEL_TENSOR.FFN_UP,
+        MODEL_TENSOR.LOCAL_ATTN_NORM,
+        MODEL_TENSOR.LOCAL_ATTN_Q,
+        MODEL_TENSOR.LOCAL_ATTN_Q_NORM,
+        MODEL_TENSOR.LOCAL_ATTN_K,
+        MODEL_TENSOR.LOCAL_ATTN_K_NORM,
+        MODEL_TENSOR.LOCAL_ATTN_V,
+        MODEL_TENSOR.LOCAL_ATTN_OUT,
+        MODEL_TENSOR.LOCAL_FFN_NORM,
+        MODEL_TENSOR.LOCAL_FFN_GATE,
+        MODEL_TENSOR.LOCAL_FFN_DOWN,
+        MODEL_TENSOR.LOCAL_FFN_UP,
+        MODEL_TENSOR.LOCAL_OUTPUT_NORM,
+        MODEL_TENSOR.LOCAL_TO_SPEECH_GATE,
+        MODEL_TENSOR.LOCAL_TO_SPEECH_DOWN,
+        MODEL_TENSOR.LOCAL_TO_SPEECH_UP,
+        MODEL_TENSOR.SPEECH_TO_LOCAL_GATE,
+        MODEL_TENSOR.SPEECH_TO_LOCAL_DOWN,
+        MODEL_TENSOR.SPEECH_TO_LOCAL_UP,
     ],
     MODEL_ARCH.QWEN3MOE: [
         MODEL_TENSOR.TOKEN_EMBD,

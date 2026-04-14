@@ -4676,14 +4676,27 @@ class MossTTSDelayModel(Qwen3Model):
             self.gguf_writer.add_uint32(gguf.Keys.LLM.SAMPLING_RATE.format(arch=arch), sampling_rate)
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        if name.startswith("language_model."):
+        # Strip prefixes — Local variant nests under model.language_model / model.embedding_list
+        if name.startswith("model.language_model."):
+            name = name.replace("model.language_model.", "", 1)
+        elif name.startswith("language_model."):
             name = name.replace("language_model.", "", 1)
 
+        # Local variant: embedding_list.0 = text (skip), 1-32 = audio codebooks 0-31
+        if (match := re.fullmatch(r"model\.embedding_list\.(\d+)\.weight", name)) is not None:
+            idx = int(match.group(1))
+            if idx == 0:
+                return  # text embedding — already covered by embed_tokens
+            yield (f"{gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.TOKEN_EMBD_AUDIO]}.{idx - 1}.weight", data_torch)
+            return
+
+        # 8B variant: emb_ext.N = audio codebook N (no offset)
         if (match := re.fullmatch(r"emb_ext\.(\d+)\.weight", name)) is not None:
             vq_idx = int(match.group(1))
             yield (f"{gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.TOKEN_EMBD_AUDIO]}.{vq_idx}.weight", data_torch)
             return
 
+        # Audio LM heads: 0 = text output, 1-32 = audio output 0-31
         if (match := re.fullmatch(r"lm_heads\.(\d+)\.weight", name)) is not None:
             head_idx = int(match.group(1))
             if head_idx == 0:
@@ -4691,6 +4704,54 @@ class MossTTSDelayModel(Qwen3Model):
             else:
                 yield (f"{gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.OUTPUT_AUDIO]}.{head_idx - 1}.weight", data_torch)
             return
+
+        # Layer norms before LM heads (Local variant)
+        if (match := re.fullmatch(r"layer_norm_before_lm_heads\.(\d+)\.weight", name)) is not None:
+            idx = int(match.group(1))
+            yield (f"{gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.AUDIO_LN]}.{idx}.weight", data_torch)
+            return
+
+        # Local transformer (4-layer mini-transformer)
+        _local_map = {
+            "self_attn.q_proj": gguf.MODEL_TENSOR.LOCAL_ATTN_Q,
+            "self_attn.k_proj": gguf.MODEL_TENSOR.LOCAL_ATTN_K,
+            "self_attn.v_proj": gguf.MODEL_TENSOR.LOCAL_ATTN_V,
+            "self_attn.o_proj": gguf.MODEL_TENSOR.LOCAL_ATTN_OUT,
+            "self_attn.q_norm": gguf.MODEL_TENSOR.LOCAL_ATTN_Q_NORM,
+            "self_attn.k_norm": gguf.MODEL_TENSOR.LOCAL_ATTN_K_NORM,
+            "input_layernorm":  gguf.MODEL_TENSOR.LOCAL_ATTN_NORM,
+            "post_attention_layernorm": gguf.MODEL_TENSOR.LOCAL_FFN_NORM,
+            "mlp.gate_proj":   gguf.MODEL_TENSOR.LOCAL_FFN_GATE,
+            "mlp.down_proj":   gguf.MODEL_TENSOR.LOCAL_FFN_DOWN,
+            "mlp.up_proj":     gguf.MODEL_TENSOR.LOCAL_FFN_UP,
+        }
+        if (match := re.fullmatch(r"local_transformer\.layers\.(\d+)\.(.+?)\.weight", name)) is not None:
+            layer_id = int(match.group(1))
+            suffix = match.group(2)
+            if suffix in _local_map:
+                gguf_name = gguf.TENSOR_NAMES[_local_map[suffix]].format(bid=layer_id)
+                yield (f"{gguf_name}.weight", data_torch)
+                return
+        if name == "local_transformer.norm.weight":
+            yield (f"{gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.LOCAL_OUTPUT_NORM]}.weight", data_torch)
+            return
+
+        # Local-to-speech bridge MLPs (33 indexed)
+        _bridge_map = {"gate_proj": gguf.MODEL_TENSOR.LOCAL_TO_SPEECH_GATE, "down_proj": gguf.MODEL_TENSOR.LOCAL_TO_SPEECH_DOWN, "up_proj": gguf.MODEL_TENSOR.LOCAL_TO_SPEECH_UP}
+        if (match := re.fullmatch(r"local_to_speech_embedding_mlps\.(\d+)\.(.+?)\.weight", name)) is not None:
+            idx = int(match.group(1))
+            proj = match.group(2)
+            if proj in _bridge_map:
+                yield (f"{gguf.TENSOR_NAMES[_bridge_map[proj]]}.{idx}.weight", data_torch)
+                return
+
+        # Speech-to-local bridge MLP (single)
+        _s2l_map = {"gate_proj": gguf.MODEL_TENSOR.SPEECH_TO_LOCAL_GATE, "down_proj": gguf.MODEL_TENSOR.SPEECH_TO_LOCAL_DOWN, "up_proj": gguf.MODEL_TENSOR.SPEECH_TO_LOCAL_UP}
+        if (match := re.fullmatch(r"speech_embedding_to_local_mlp\.(.+?)\.weight", name)) is not None:
+            proj = match.group(1)
+            if proj in _s2l_map:
+                yield (f"{gguf.TENSOR_NAMES[_s2l_map[proj]]}.weight", data_torch)
+                return
 
         yield from super().modify_tensors(data_torch, name, bid)
 

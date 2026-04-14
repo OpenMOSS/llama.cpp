@@ -3728,6 +3728,57 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
                         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
                     }
+
+                    // MOSS-TTS Local variant: optional tensors (TENSOR_NOT_REQUIRED for 8B compat)
+                    // Dimensions: local_dim=1536, local_ff=8960, n_embd=2048, n_head_local=16, n_kv_local=8, head_dim=128
+                    {
+                        const int64_t local_dim = 1536;
+                        const int64_t local_ff  = 8960;
+                        const int64_t local_kv  = 1024;  // n_kv_heads(8) * head_dim(128)
+                        const int64_t local_q   = 2048;  // n_heads(16) * head_dim(128)
+                        const int64_t head_dim  = 128;
+                        const int64_t bridge_ff = 2048;   // additional_mlp_ffn_hidden_size
+                        const uint32_t n_heads = hparams.n_vq + 1;
+
+                        // Audio layer norms before each head [2048]
+                        audio_ln.resize(n_heads);
+                        for (uint32_t i = 0; i < n_heads; ++i) {
+                            audio_ln[i] = create_tensor(tn(LLM_TENSOR_AUDIO_LN, "weight", -1, i), {n_embd}, TENSOR_NOT_REQUIRED);
+                        }
+
+                        // Speech-to-local bridge MLP: 2048 → 1536 (SwiGLU: gate/up [2048,2048], down [2048,1536])
+                        speech_to_local_gate = create_tensor(tn(LLM_TENSOR_SPEECH_TO_LOCAL_GATE, "weight"), {n_embd, bridge_ff}, TENSOR_NOT_REQUIRED);
+                        speech_to_local_down = create_tensor(tn(LLM_TENSOR_SPEECH_TO_LOCAL_DOWN, "weight"), {bridge_ff, local_dim}, TENSOR_NOT_REQUIRED);
+                        speech_to_local_up   = create_tensor(tn(LLM_TENSOR_SPEECH_TO_LOCAL_UP,   "weight"), {n_embd, bridge_ff}, TENSOR_NOT_REQUIRED);
+
+                        // Local-to-speech bridge MLPs: 1536 → 2048 per head (gate/up [1536,2048], down [2048,2048])
+                        local_to_speech_gate.resize(n_heads);
+                        local_to_speech_down.resize(n_heads);
+                        local_to_speech_up.resize(n_heads);
+                        for (uint32_t i = 0; i < n_heads; ++i) {
+                            local_to_speech_gate[i] = create_tensor(tn(LLM_TENSOR_LOCAL_TO_SPEECH_GATE, "weight", -1, i), {local_dim, bridge_ff}, TENSOR_NOT_REQUIRED);
+                            local_to_speech_down[i] = create_tensor(tn(LLM_TENSOR_LOCAL_TO_SPEECH_DOWN, "weight", -1, i), {bridge_ff, n_embd}, TENSOR_NOT_REQUIRED);
+                            local_to_speech_up[i]   = create_tensor(tn(LLM_TENSOR_LOCAL_TO_SPEECH_UP,   "weight", -1, i), {local_dim, bridge_ff}, TENSOR_NOT_REQUIRED);
+                        }
+
+                        // Local transformer (4 layers at local_dim=1536)
+                        local_output_norm = create_tensor(tn(LLM_TENSOR_LOCAL_OUTPUT_NORM, "weight"), {local_dim}, TENSOR_NOT_REQUIRED);
+                        local_layers.resize(4);
+                        for (int i = 0; i < 4; ++i) {
+                            auto & ll = local_layers[i];
+                            ll.attn_norm   = create_tensor(tn(LLM_TENSOR_LOCAL_ATTN_NORM,   "weight", i), {local_dim}, TENSOR_NOT_REQUIRED);
+                            ll.wq          = create_tensor(tn(LLM_TENSOR_LOCAL_ATTN_Q,      "weight", i), {local_dim, local_q}, TENSOR_NOT_REQUIRED);
+                            ll.wk          = create_tensor(tn(LLM_TENSOR_LOCAL_ATTN_K,      "weight", i), {local_dim, local_kv}, TENSOR_NOT_REQUIRED);
+                            ll.wv          = create_tensor(tn(LLM_TENSOR_LOCAL_ATTN_V,      "weight", i), {local_dim, local_kv}, TENSOR_NOT_REQUIRED);
+                            ll.wo          = create_tensor(tn(LLM_TENSOR_LOCAL_ATTN_OUT,    "weight", i), {local_q, local_dim}, TENSOR_NOT_REQUIRED);
+                            ll.attn_q_norm = create_tensor(tn(LLM_TENSOR_LOCAL_ATTN_Q_NORM, "weight", i), {head_dim}, TENSOR_NOT_REQUIRED);
+                            ll.attn_k_norm = create_tensor(tn(LLM_TENSOR_LOCAL_ATTN_K_NORM, "weight", i), {head_dim}, TENSOR_NOT_REQUIRED);
+                            ll.ffn_norm    = create_tensor(tn(LLM_TENSOR_LOCAL_FFN_NORM,    "weight", i), {local_dim}, TENSOR_NOT_REQUIRED);
+                            ll.ffn_gate    = create_tensor(tn(LLM_TENSOR_LOCAL_FFN_GATE,    "weight", i), {local_dim, local_ff}, TENSOR_NOT_REQUIRED);
+                            ll.ffn_down    = create_tensor(tn(LLM_TENSOR_LOCAL_FFN_DOWN,    "weight", i), {local_ff, local_dim}, TENSOR_NOT_REQUIRED);
+                            ll.ffn_up      = create_tensor(tn(LLM_TENSOR_LOCAL_FFN_UP,      "weight", i), {local_dim, local_ff}, TENSOR_NOT_REQUIRED);
+                        }
+                    }
                 } break;
             case LLM_ARCH_QWEN3MOE:
             case LLM_ARCH_QWEN3VLMOE:
