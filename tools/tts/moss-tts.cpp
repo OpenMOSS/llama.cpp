@@ -3,6 +3,10 @@
 #include "log.h"
 #include "llama.h"
 #include "llama-cpp.h"
+#include "../../src/llama-model.h"
+#include "ggml.h"
+#include "ggml-backend.h"
+#include "ggml-alloc.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -637,6 +641,67 @@ static std::vector<llama_token> moss_collect_audio_history_channels(
     return out;
 }
 
+// ── MOSS-TTS Local: autoregressive channel inference ──
+// Given backbone hidden state, runs the local transformer sequentially per channel.
+// Returns audio logits for all n_vq channels as a flat vector [n_vq * audio_vocab].
+
+static void swiglu_cpu(const float * gate_w, const float * up_w, const float * down_w,
+                       const float * input, float * output,
+                       int64_t in_dim, int64_t ff_dim, int64_t out_dim) {
+    // SwiGLU: output = down(silu(gate(input)) * up(input))
+    std::vector<float> gate(ff_dim), up(ff_dim), hidden(ff_dim);
+
+    // gate = input @ gate_w^T
+    for (int64_t j = 0; j < ff_dim; ++j) {
+        float sum = 0;
+        for (int64_t k = 0; k < in_dim; ++k) sum += input[k] * gate_w[j * in_dim + k];
+        gate[j] = sum / (1.0f + expf(-sum)); // silu
+    }
+    // up = input @ up_w^T
+    for (int64_t j = 0; j < ff_dim; ++j) {
+        float sum = 0;
+        for (int64_t k = 0; k < in_dim; ++k) sum += input[k] * up_w[j * in_dim + k];
+        hidden[j] = gate[j] * sum;
+    }
+    // output = hidden @ down_w^T
+    for (int64_t j = 0; j < out_dim; ++j) {
+        float sum = 0;
+        for (int64_t k = 0; k < ff_dim; ++k) sum += hidden[k] * down_w[j * ff_dim + k];
+        output[j] = sum;
+    }
+}
+
+static void rms_norm_cpu(float * x, const float * weight, int64_t dim, float eps = 1e-6f) {
+    float ss = 0;
+    for (int64_t i = 0; i < dim; ++i) ss += x[i] * x[i];
+    ss = 1.0f / sqrtf(ss / (float)dim + eps);
+    for (int64_t i = 0; i < dim; ++i) x[i] = x[i] * ss * weight[i];
+}
+
+static void matmul_cpu(const float * weight, const float * input, float * output,
+                       int64_t out_dim, int64_t in_dim) {
+    for (int64_t j = 0; j < out_dim; ++j) {
+        float sum = 0;
+        for (int64_t k = 0; k < in_dim; ++k) sum += input[k] * weight[j * in_dim + k];
+        output[j] = sum;
+    }
+}
+
+// Read float data from a ggml tensor (dequantize if needed)
+static std::vector<float> tensor_to_float(const struct ggml_tensor * t) {
+    const int64_t n = ggml_nelements(t);
+    std::vector<float> out(n);
+    if (t->type == GGML_TYPE_F32) {
+        ggml_backend_tensor_get(t, out.data(), 0, n * sizeof(float));
+    } else {
+        // Dequantize
+        std::vector<uint8_t> buf(ggml_nbytes(t));
+        ggml_backend_tensor_get(t, buf.data(), 0, buf.size());
+        ggml_get_type_traits(t->type)->to_float(buf.data(), out.data(), n);
+    }
+    return out;
+}
+
 static std::vector<llama_token> moss_delay_step(
         moss_delay_state & state,
         const std::vector<float> & text_logits,
@@ -1141,7 +1206,11 @@ static void moss_generate_from_ref(
     cparams.n_batch = std::max<uint32_t>((uint32_t) hdr.prompt_frames, 1u);
     cparams.n_ubatch = cparams.n_batch;
     cparams.n_seq_max = 1;
-    cparams.embeddings = false;
+    // Detect Local variant
+    const llama_model * mdl = model.get();
+    const bool is_local = (mdl->speech_to_local_gate != nullptr);
+
+    cparams.embeddings = is_local; // need hidden state for Local channel loop
 
     llama_context_ptr ctx(llama_init_from_model(model.get(), cparams));
     if (!ctx) {
@@ -1150,7 +1219,11 @@ static void moss_generate_from_ref(
 
     llama_set_warmup(ctx.get(), false);
     llama_set_causal_attn(ctx.get(), true);
-    llama_set_embeddings(ctx.get(), false);
+    llama_set_embeddings(ctx.get(), is_local);
+
+    if (is_local) {
+        LOG("moss-tts: detected Local variant — using autoregressive channel loop\n");
+    }
 
     {
         moss_owned_batch batch = moss_batch_from_packed_rows(
@@ -1169,6 +1242,62 @@ static void moss_generate_from_ref(
     const size_t audio_vocab = moss_audio_vocab_with_pad(cfg);
     moss_rng rng(seed);
 
+    // Pre-cache local weights on CPU for the channel loop (only for Local variant)
+    const int64_t n_embd = llama_model_n_embd(mdl);
+    const int64_t local_dim = 1536;   // from config
+    const int64_t bridge_ff = 2048;   // additional_mlp_ffn_hidden_size
+    const int64_t local_ff  = 8960;   // local_ffn_hidden_size
+    const int n_local_layers = is_local ? (int) mdl->local_layers.size() : 0;
+
+    // Pre-read bridge MLP weights to CPU (slow first time, but reused every step)
+    std::vector<float> s2l_gate_w, s2l_up_w, s2l_down_w;
+    std::vector<std::vector<float>> l2s_gate_w, l2s_up_w, l2s_down_w;
+    std::vector<std::vector<float>> aln_w;
+    std::vector<std::vector<float>> head_w;
+    // Local FFN weights per layer
+    struct local_ffn_weights { std::vector<float> norm_w, gate_w, up_w, down_w; };
+    std::vector<local_ffn_weights> local_ffns;
+    std::vector<float> local_out_norm_w;
+    // Audio embeddings for token re-embedding
+    std::vector<std::vector<float>> audio_emb_w;
+
+    if (is_local) {
+        LOG("moss-tts: pre-caching local weights on CPU...\n");
+        s2l_gate_w = tensor_to_float(mdl->speech_to_local_gate);
+        s2l_up_w   = tensor_to_float(mdl->speech_to_local_up);
+        s2l_down_w = tensor_to_float(mdl->speech_to_local_down);
+
+        l2s_gate_w.resize(cfg.n_vq);
+        l2s_up_w.resize(cfg.n_vq);
+        l2s_down_w.resize(cfg.n_vq);
+        aln_w.resize(cfg.n_vq);
+        head_w.resize(cfg.n_vq);
+        for (uint32_t i = 0; i < cfg.n_vq; ++i) {
+            l2s_gate_w[i] = tensor_to_float(mdl->local_to_speech_gate[i]);
+            l2s_up_w[i]   = tensor_to_float(mdl->local_to_speech_up[i]);
+            l2s_down_w[i] = tensor_to_float(mdl->local_to_speech_down[i]);
+            if (mdl->audio_ln[i]) aln_w[i] = tensor_to_float(mdl->audio_ln[i]);
+            head_w[i] = tensor_to_float(mdl->output_audio[i]);
+        }
+
+        local_ffns.resize(n_local_layers);
+        for (int ll = 0; ll < n_local_layers; ++ll) {
+            const auto & layer = mdl->local_layers[ll];
+            if (layer.ffn_norm)  local_ffns[ll].norm_w = tensor_to_float(layer.ffn_norm);
+            if (layer.ffn_gate)  local_ffns[ll].gate_w = tensor_to_float(layer.ffn_gate);
+            if (layer.ffn_up)    local_ffns[ll].up_w   = tensor_to_float(layer.ffn_up);
+            if (layer.ffn_down)  local_ffns[ll].down_w = tensor_to_float(layer.ffn_down);
+        }
+        if (mdl->local_output_norm) local_out_norm_w = tensor_to_float(mdl->local_output_norm);
+
+        // Audio embeddings for re-embedding sampled tokens
+        audio_emb_w.resize(cfg.n_vq);
+        for (uint32_t i = 0; i < cfg.n_vq && i < mdl->tok_embd_audio.size(); ++i) {
+            audio_emb_w[i] = tensor_to_float(mdl->tok_embd_audio[i]);
+        }
+        LOG("moss-tts: local weights cached (%d FFN layers, %u channels)\n", n_local_layers, cfg.n_vq);
+    }
+
     for (int32_t step = 0; step < max_new_tokens; ++step) {
         const float * logits = llama_get_logits_ith(ctx.get(), -1);
         if (logits == nullptr) {
@@ -1176,9 +1305,86 @@ static void moss_generate_from_ref(
         }
 
         std::vector<float> text_logits(logits, logits + text_vocab);
-        std::vector<float> audio_logits(
-                logits + text_vocab,
-                logits + text_vocab + cfg.n_vq * audio_vocab);
+        std::vector<float> audio_logits;
+
+        if (is_local) {
+            // ── Local variant: autoregressive channel loop on CPU ──
+            const float * embd = llama_get_embeddings_ith(ctx.get(), -1);
+            if (embd == nullptr) {
+                throw std::runtime_error("llama_get_embeddings_ith returned null (is embeddings enabled?)");
+            }
+
+            // speech_to_local: backbone(2048) → local(1536)
+            std::vector<float> local_cur(local_dim);
+            swiglu_cpu(s2l_gate_w.data(), s2l_up_w.data(), s2l_down_w.data(),
+                       embd, local_cur.data(), n_embd, bridge_ff, local_dim);
+
+            audio_logits.resize(cfg.n_vq * audio_vocab);
+
+            for (uint32_t ch = 0; ch < cfg.n_vq; ++ch) {
+                // Run local transformer FFN layers on local_cur
+                std::vector<float> lc = local_cur; // copy for residual
+
+                for (int ll = 0; ll < n_local_layers; ++ll) {
+                    const auto & fw = local_ffns[ll];
+                    if (fw.norm_w.empty()) continue;
+
+                    std::vector<float> normed = lc;
+                    rms_norm_cpu(normed.data(), fw.norm_w.data(), local_dim);
+
+                    std::vector<float> ffn_out(local_dim);
+                    swiglu_cpu(fw.gate_w.data(), fw.up_w.data(), fw.down_w.data(),
+                               normed.data(), ffn_out.data(), local_dim, local_ff, local_dim);
+
+                    // Residual
+                    for (int64_t k = 0; k < local_dim; ++k) lc[k] += ffn_out[k];
+                }
+
+                // Local output norm
+                if (!local_out_norm_w.empty()) {
+                    rms_norm_cpu(lc.data(), local_out_norm_w.data(), local_dim);
+                }
+
+                // local_to_speech: local(1536) → backbone(2048)
+                std::vector<float> ch_embd(n_embd);
+                swiglu_cpu(l2s_gate_w[ch].data(), l2s_up_w[ch].data(), l2s_down_w[ch].data(),
+                           lc.data(), ch_embd.data(), local_dim, bridge_ff, n_embd);
+
+                // Audio layer norm
+                if (!aln_w[ch].empty()) {
+                    rms_norm_cpu(ch_embd.data(), aln_w[ch].data(), n_embd);
+                }
+
+                // Audio head → logits for this channel
+                std::vector<float> ch_logits(audio_vocab);
+                matmul_cpu(head_w[ch].data(), ch_embd.data(), ch_logits.data(), (int64_t)audio_vocab, n_embd);
+
+                std::copy(ch_logits.begin(), ch_logits.end(), audio_logits.begin() + ch * audio_vocab);
+
+                // ── Autoregressive feedback: embed sampled token → speech_to_local → new local_cur ──
+                // Sample this channel's token greedily for feedback (actual sampling happens in moss_delay_step)
+                const auto max_it = std::max_element(ch_logits.begin(), ch_logits.end());
+                const llama_token sampled = (llama_token)(max_it - ch_logits.begin());
+
+                // Re-embed: audio_emb[ch][sampled] → 2048 dim, then speech_to_local → 1536
+                if (ch < audio_emb_w.size() && !audio_emb_w[ch].empty()) {
+                    const int64_t emb_dim = n_embd;
+                    std::vector<float> token_embd(emb_dim);
+                    // audio_emb is [audio_vocab, emb_dim], get row 'sampled'
+                    if ((size_t)sampled * emb_dim + emb_dim <= audio_emb_w[ch].size()) {
+                        std::copy(audio_emb_w[ch].begin() + sampled * emb_dim,
+                                  audio_emb_w[ch].begin() + sampled * emb_dim + emb_dim,
+                                  token_embd.data());
+                    }
+                    // Project to local dim for next channel
+                    swiglu_cpu(s2l_gate_w.data(), s2l_up_w.data(), s2l_down_w.data(),
+                               token_embd.data(), local_cur.data(), n_embd, bridge_ff, local_dim);
+                }
+            }
+        } else {
+            // ── 8B variant: read parallel audio logits directly ──
+            audio_logits.assign(logits + text_vocab, logits + text_vocab + cfg.n_vq * audio_vocab);
+        }
 
         const std::vector<llama_token> next = moss_delay_step(
                 state, text_logits, audio_logits, sampling_cfg, cfg, rng);
