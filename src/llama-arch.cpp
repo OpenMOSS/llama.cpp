@@ -350,6 +350,25 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_OUTPUT_NORM_LFM2,                       "token_embd_norm" }, // fix for wrong tensor name
     { LLM_TENSOR_OUTPUT,                                 "output" },
     { LLM_TENSOR_OUTPUT_AUDIO,                           "output_audio.%d" },
+    { LLM_TENSOR_AUDIO_LN,                               "audio_ln.%d" },
+    { LLM_TENSOR_LOCAL_ATTN_NORM,                        "local.blk.%d.attn_norm" },
+    { LLM_TENSOR_LOCAL_ATTN_Q,                           "local.blk.%d.attn_q" },
+    { LLM_TENSOR_LOCAL_ATTN_Q_NORM,                      "local.blk.%d.attn_q_norm" },
+    { LLM_TENSOR_LOCAL_ATTN_K,                           "local.blk.%d.attn_k" },
+    { LLM_TENSOR_LOCAL_ATTN_K_NORM,                      "local.blk.%d.attn_k_norm" },
+    { LLM_TENSOR_LOCAL_ATTN_V,                           "local.blk.%d.attn_v" },
+    { LLM_TENSOR_LOCAL_ATTN_OUT,                         "local.blk.%d.attn_output" },
+    { LLM_TENSOR_LOCAL_FFN_NORM,                         "local.blk.%d.ffn_norm" },
+    { LLM_TENSOR_LOCAL_FFN_GATE,                         "local.blk.%d.ffn_gate" },
+    { LLM_TENSOR_LOCAL_FFN_DOWN,                         "local.blk.%d.ffn_down" },
+    { LLM_TENSOR_LOCAL_FFN_UP,                           "local.blk.%d.ffn_up" },
+    { LLM_TENSOR_LOCAL_OUTPUT_NORM,                      "local.output_norm" },
+    { LLM_TENSOR_LOCAL_TO_SPEECH_GATE,                   "local_to_speech.ffn_gate.%d" },
+    { LLM_TENSOR_LOCAL_TO_SPEECH_DOWN,                   "local_to_speech.ffn_down.%d" },
+    { LLM_TENSOR_LOCAL_TO_SPEECH_UP,                     "local_to_speech.ffn_up.%d" },
+    { LLM_TENSOR_SPEECH_TO_LOCAL_GATE,                   "speech_to_local.ffn_gate" },
+    { LLM_TENSOR_SPEECH_TO_LOCAL_DOWN,                   "speech_to_local.ffn_down" },
+    { LLM_TENSOR_SPEECH_TO_LOCAL_UP,                     "speech_to_local.ffn_up" },
     { LLM_TENSOR_ROPE_FREQS,                             "rope_freqs" },
     { LLM_TENSOR_ATTN_NORM,                              "blk.%d.attn_norm" },
     { LLM_TENSOR_ATTN_Q,                                 "blk.%d.attn_q" },
@@ -990,6 +1009,7 @@ static std::set<llm_tensor> llm_get_tensor_names(llm_arch arch) {
                 LLM_TENSOR_OUTPUT_NORM,
                 LLM_TENSOR_OUTPUT,
                 LLM_TENSOR_OUTPUT_AUDIO,
+                LLM_TENSOR_AUDIO_LN,
                 LLM_TENSOR_ATTN_NORM,
                 LLM_TENSOR_ATTN_Q,
                 LLM_TENSOR_ATTN_Q_NORM,
@@ -1001,6 +1021,24 @@ static std::set<llm_tensor> llm_get_tensor_names(llm_arch arch) {
                 LLM_TENSOR_FFN_GATE,
                 LLM_TENSOR_FFN_DOWN,
                 LLM_TENSOR_FFN_UP,
+                LLM_TENSOR_LOCAL_ATTN_NORM,
+                LLM_TENSOR_LOCAL_ATTN_Q,
+                LLM_TENSOR_LOCAL_ATTN_Q_NORM,
+                LLM_TENSOR_LOCAL_ATTN_K,
+                LLM_TENSOR_LOCAL_ATTN_K_NORM,
+                LLM_TENSOR_LOCAL_ATTN_V,
+                LLM_TENSOR_LOCAL_ATTN_OUT,
+                LLM_TENSOR_LOCAL_FFN_NORM,
+                LLM_TENSOR_LOCAL_FFN_GATE,
+                LLM_TENSOR_LOCAL_FFN_DOWN,
+                LLM_TENSOR_LOCAL_FFN_UP,
+                LLM_TENSOR_LOCAL_OUTPUT_NORM,
+                LLM_TENSOR_LOCAL_TO_SPEECH_GATE,
+                LLM_TENSOR_LOCAL_TO_SPEECH_DOWN,
+                LLM_TENSOR_LOCAL_TO_SPEECH_UP,
+                LLM_TENSOR_SPEECH_TO_LOCAL_GATE,
+                LLM_TENSOR_SPEECH_TO_LOCAL_DOWN,
+                LLM_TENSOR_SPEECH_TO_LOCAL_UP,
             };
         case LLM_ARCH_QWEN3MOE:
         case LLM_ARCH_QWEN3VLMOE:
@@ -2597,6 +2635,25 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_TOKEN_EMBD_NORM,            {LLM_TENSOR_LAYER_INPUT, GGML_OP_MUL}},
     {LLM_TENSOR_OUTPUT,                     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_OUTPUT_AUDIO,               {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_AUDIO_LN,                  {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
+    {LLM_TENSOR_LOCAL_ATTN_NORM,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_LOCAL_ATTN_Q,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LOCAL_ATTN_Q_NORM,        {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_LOCAL_ATTN_K,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LOCAL_ATTN_K_NORM,        {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_LOCAL_ATTN_V,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LOCAL_ATTN_OUT,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LOCAL_FFN_NORM,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_LOCAL_FFN_GATE,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LOCAL_FFN_DOWN,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LOCAL_FFN_UP,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LOCAL_OUTPUT_NORM,        {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
+    {LLM_TENSOR_LOCAL_TO_SPEECH_GATE,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LOCAL_TO_SPEECH_DOWN,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LOCAL_TO_SPEECH_UP,       {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_SPEECH_TO_LOCAL_GATE,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_SPEECH_TO_LOCAL_DOWN,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_SPEECH_TO_LOCAL_UP,       {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_CLS,                        {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_CLS_OUT,                    {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_CLS_NORM,                   {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
@@ -2827,6 +2884,10 @@ std::string LLM_TN_IMPL::str() const {
     switch (tensor) {
         case LLM_TENSOR_TOKEN_EMBD_AUDIO:
         case LLM_TENSOR_OUTPUT_AUDIO:
+        case LLM_TENSOR_AUDIO_LN:
+        case LLM_TENSOR_LOCAL_TO_SPEECH_GATE:
+        case LLM_TENSOR_LOCAL_TO_SPEECH_DOWN:
+        case LLM_TENSOR_LOCAL_TO_SPEECH_UP:
             name = ::format(LLM_TENSOR_NAMES.at(tensor), xid);
             break;
         default:
